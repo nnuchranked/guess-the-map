@@ -39,22 +39,93 @@ def _ascii_part(name):
     return re.sub(r"[^\x00-\x7F]+", " ", text)
 
 
-def _answers(name, aliases):
-    variants = [name, *aliases]
-    ascii_name = _ascii_part(name)
-    if len(normalize(ascii_name)) >= 3:
-        variants.append(ascii_name)
-    return {a for a in map(normalize, variants) if a}
+def _answers(name, aliases, authors):
+    """Build valid answers: map name, aliases, authors and combined forms."""
+    titles = [str(name).strip()]
+
+    if isinstance(aliases, str):
+        aliases = [aliases]
+
+    titles.extend(str(alias).strip() for alias in (aliases or []) if str(alias).strip())
+
+    authors = list(
+        dict.fromkeys(
+            str(author).strip() for author in (authors or []) if str(author).strip()
+        )
+    )
+
+    variants = list(authors)
+
+    for title in titles:
+        title_variants = [title]
+
+        # Preserve the existing support for English portions
+        # of multilingual map names.
+        ascii_title = _ascii_part(title).strip()
+
+        if len(normalize(ascii_title)) >= 3 and normalize(ascii_title) != normalize(
+            title
+        ):
+            title_variants.append(ascii_title)
+
+        variants.extend(title_variants)
+
+        # Accept "Map | by Author" for each individual creator.
+        for title_variant in title_variants:
+            for author in authors:
+                variants.append(f"{title_variant} | by {author}")
+
+        # Also accept the complete combined creator list.
+        if authors:
+            variants.append(f"{title} | by {', '.join(authors)}")
+
+    answers = set()
+
+    for variant in variants:
+        normalized = normalize(variant)
+        if normalized:
+            answers.add(normalized)
+
+    return answers
+
+
+def _creator_names(game_map):
+    """Get unique creator usernames from a map."""
+    names = []
+    seen = set()
+
+    for creator in game_map.get("creators") or []:
+        if not isinstance(creator, dict):
+            continue
+
+        username = str(creator.get("username") or "").strip()
+        key = username.casefold()
+
+        if username and key not in seen:
+            seen.add(key)
+            names.append(username)
+
+    return names
 
 
 def creators_text(game_map):
-    names = [c.get("username") for c in game_map.get("creators") or [] if c.get("username")]
+    names = _creator_names(game_map)
     return ", ".join(names) if names else "Unknown"
+
+
+def map_display_name(game_map):
+    """Return 'Map Name | by Creator'."""
+    authors = _creator_names(game_map)
+
+    if not authors:
+        return game_map["name"]
+
+    return f"{game_map['name']} | by {', '.join(authors)}"
 
 
 def parse_maps(raw):
     """Turn the API's JSON into playable map dicts."""
-    if isinstance(raw, dict):                 # accept {"levels": [...]} style wrappers too
+    if isinstance(raw, dict):  # accept {"levels": [...]} style wrappers too
         raw = next((v for v in raw.values() if isinstance(v, list)), None)
     if not isinstance(raw, list):
         raise TypeError("unexpected API format")
@@ -63,8 +134,10 @@ def parse_maps(raw):
         if not isinstance(m, dict):
             skipped += 1
             continue
-        m = dict(m)                           # copy: never modify the raw API data
-        m["name"] = html.unescape(str(m.get("name") or "")).strip()   # "Aren&#39;t" -> "Aren't"
+        m = dict(m)  # copy: never modify the raw API data
+        m["name"] = html.unescape(
+            str(m.get("name") or "")
+        ).strip()  # "Aren&#39;t" -> "Aren't"
         mid = imgur_id(m.get("imgur_url"))
         if (
             m.get("hidden")
@@ -76,8 +149,12 @@ def parse_maps(raw):
             skipped += 1
             continue
         m["id"] = mid
-        m["_answers"] = _answers(m["name"], m.get("aliases", []))
-        if not m["_answers"]:                 # e.g. a name made only of symbols: nobody can type it
+        m["_answers"] = _answers(
+            m["name"],
+            m.get("aliases", []),
+            _creator_names(m),
+        )
+        if not m["_answers"]:  # e.g. a name made only of symbols: nobody can type it
             skipped += 1
             continue
         maps.append(m)
@@ -123,14 +200,43 @@ async def load_maps(session):
 
 
 def build_suggestions(maps):
-    """Unique map names (with their normalized form) for autocomplete, sorted A-Z."""
+    """Unique map names, creator names and combined names for autocomplete."""
     seen, index = set(), []
+
     for m in maps:
-        key = m["name"].casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        index.append((m["name"][:100], normalize(m["name"])))     # Discord: max 100 characters
+        authors = _creator_names(m)
+
+        candidates = [
+            m["name"],
+            *authors,
+        ]
+
+        # Combined map + creator suggestions.
+        candidates.extend(
+            f"{m['name']} | by {author}"
+            for author in authors
+        )
+
+        if authors:
+            candidates.append(
+                f"{m['name']} | by {', '.join(authors)}"
+            )
+
+        for candidate in candidates:
+            candidate = str(candidate).strip()
+            if not candidate:
+                continue
+
+            # Discord limits autocomplete choice names to 100 characters.
+            candidate = candidate[:100]
+            key = candidate.casefold()
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+            index.append((candidate, normalize(candidate)))
+
     index.sort(key=lambda item: item[0].casefold())
     return index
 
@@ -159,6 +265,9 @@ def is_match(guess, game_map):
         # fuzzy matching only for longer names, so short names can't be guessed by accident
         if len(cand) > 5 and abs(len(g) - len(cand)) <= 3:
             sm = difflib.SequenceMatcher(None, g, cand)
-            if sm.real_quick_ratio() >= config.FUZZY_THRESHOLD and sm.ratio() >= config.FUZZY_THRESHOLD:
+            if (
+                sm.real_quick_ratio() >= config.FUZZY_THRESHOLD
+                and sm.ratio() >= config.FUZZY_THRESHOLD
+            ):
                 return True
     return False

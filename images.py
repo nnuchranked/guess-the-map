@@ -6,7 +6,7 @@ import secrets
 
 import aiohttp
 import discord
-from PIL import Image, ImageFilter
+from PIL import Image, ImageFilter, ImageStat
 
 import config
 
@@ -63,9 +63,38 @@ async def ensure_image(session, game_map):
 
 
 def _blur(path, level_index):
-    with Image.open(path) as im:
-        radius = max(1.0, config.BLUR_LEVELS[level_index] * im.width)
-        out = im.filter(ImageFilter.GaussianBlur(radius))
+    with Image.open(path) as source:
+        im = source.convert("RGB")
+
+    # Normalize every image to the same width before blurring.
+    reference_width = config.BLUR_REFERENCE_WIDTH
+    if im.width != reference_width:
+        new_height = max(1, round(im.height * reference_width / im.width))
+        im = im.resize(
+            (reference_width, new_height),
+            Image.Resampling.LANCZOS
+        )
+
+    # Estimate overall color variation using a small thumbnail.
+    sample = im.copy()
+    sample.thumbnail((128, 128), Image.Resampling.LANCZOS)
+
+    contrast = sum(ImageStat.Stat(sample).stddev) / 3
+
+    # Low color variation = less blur.
+    # At 60 or above, use the full configured blur.
+    contrast_factor = 0.30 + 0.70 * min(contrast / 60.0, 1.0)
+
+    radius = max(
+        1.0,
+        config.BLUR_LEVELS[level_index]
+        * config.BLUR_MULTIPLIER
+        * reference_width
+        * contrast_factor
+    )
+
+    out = im.filter(ImageFilter.GaussianBlur(radius))
+
     buf = io.BytesIO()
     out.save(buf, "JPEG", quality=80)
     buf.seek(0)

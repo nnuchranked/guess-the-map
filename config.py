@@ -1,13 +1,14 @@
-"""All the knobs in one place. Edit and restart the bot."""
-
 # --- Game rules ---------------------------------------------------------
 MAX_ATTEMPTS = 3                      # tries per player, per round
 POINTS_BY_ATTEMPT = [3, 2, 1]         # points for a correct guess on try 1 / 2 / 3
-BLUR_LEVELS = [0.06, 0.04, 0.02]    # blur radius as a fraction of image width, per try
+BLUR_LEVELS = [0.07, 0.05, 0.03]    # blur radius as a fraction of image width, per try
                                       # (bigger = blurrier). One entry per attempt.
                                       # Radius in pixels = level x BLUR_MULTIPLIER x 800.
 BLUR_MULTIPLIER = 1.0                 # scales ALL levels at once: 0.5 = half as blurry, 2 = twice
-DAILY_RESET_HOUR_UTC = 0              # a new map appears every day at this hour (0-23, UTC)
+BLUR_REFERENCE_WIDTH = 800
+BLUR_MULTIPLIER = 1.0
+MAP_INTERVAL_HOURS = 12               # hours between maps: 24 = daily, 12 = twice a day, 48 = every other day
+DAILY_RESET_HOUR_UTC = 0              # the hour (0-23, UTC) the schedule is counted from              # a new map appears every day at this hour (0-23, UTC)
 ANNOUNCE_CORRECT = True               # post "X solved it on try N!" publicly (no spoilers)
 ONLY_TOURNAMENT_LEGAL = True          # only use maps with tournament_legal == true
 EXCLUDE_UNDER_REVIEW = True           # skip maps flagged under_review
@@ -29,6 +30,7 @@ assert len(POINTS_BY_ATTEMPT) == MAX_ATTEMPTS, "POINTS_BY_ATTEMPT needs one entr
 assert len(BLUR_LEVELS) == MAX_ATTEMPTS, "BLUR_LEVELS needs one entry per attempt"
 assert 0 <= DAILY_RESET_HOUR_UTC <= 23, "DAILY_RESET_HOUR_UTC must be 0-23"
 assert 1 <= AUTOCOMPLETE_MAX_RESULTS <= 25, "Discord allows at most 25 autocomplete suggestions"
+assert MAP_INTERVAL_HOURS * 60 >= 1, "MAP_INTERVAL_HOURS must be at least 1 minute (1 / 60)"
 
 MAPS_URL = "https://compuch.com/api/levels"
 MAPS_REFRESH_HOURS = 6

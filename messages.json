@@ -8,11 +8,11 @@
   ],
   "correct_first": [
     "🎉 Great guess, {user}! First try?! You absolute legend! **+{points} points** (total: {total})",
-    "🌟 Bullseye, {user}! Eyes like a hawk! **+{points} points** (total: {total})",
-    "🏆 WOW {user}, no hesitation, no mercy! **+{points} points** (total: {total})",
-    "🥳 Nailed it on the first go, {user}! **+{points} points** (total: {total})",
+    "🌟 Bullseye, {user}! You got eyes like Raito! **+{points} points** (total: {total})",
+    "🏆 WOW {user}!, no hesitation, no mercy! **+{points} points** (total: {total})",
+    "🥳 Nailed it on the first go, {user}, Kreuz would be proud! **+{points} points** (total: {total})",
     "🔮 Are you psychic, {user}?! **+{points} points** (total: {total})",
-    "🎯 Direct hit! {user} knows their maps! **+{points} points** (total: {total})"
+    "🎯 Direct hit! {user} knows the maps, Bojack would be proud! **+{points} points** (total: {total})"
   ],
   "correct_second": [
     "👏 Nice one, {user}! Second time's the charm! **+{points} points** (total: {total})",
@@ -30,7 +30,7 @@
   ],
   "wrong_guess": [
     "😜 Not quite, {user}! Here's a clearer look. {attempts_left} left!",
-    "🙈 Oof, close but no cigar! Less blur for you, {user}. {attempts_left} left!",
+    "🙈 Oof, close but Not That One! Less blur for you, {user}. {attempts_left} left!",
     "🤔 Hmm, nope! Let me wipe the lens a bit... {attempts_left} left!",
     "🎈 Nice try, {user}! Squint at this one. {attempts_left} left!",
     "🧐 Not that one! The picture's getting sharper... {attempts_left} left!"
@@ -38,12 +38,12 @@
   "out_of_attempts": [
     "🫠 That's all your tries, {user}! The answer was **{map_name}**. Don't share it, **the horse is watching.**",
     "🙃 Out of guesses, {user}! Here's what it was. Don't share it, **the horse is watching.**",
-    "😅 No tries left, {user}. Better luck with tomorrow's map! And don't share it, **the horse is watching.**"
+    "😅 No tries left, {user}. Better luck with the next map! And don't share it, **the horse is watching.**"
   ],
   "announce_correct": [
-    "🎉 **{user}** just cracked today's map on try {attempt}! (+{points} points)",
+    "🎉 **{user}** just guessed today's map on try {attempt}! (+{points} points)",
     "🔍 Sharp eyes! **{user}** named the map on try {attempt} for **{points}** points!",
-    "🏆 **{user}** solved it on try {attempt}! No spoilers, folks!"
+    "🏆 **{user}** solved it on try {attempt}! No spoilers, folks! (or Ivory gets mad)"
   ],
   "day_over": [
     "🌙 That's a wrap on the last map! It was **{map_name}**. {solvers} player(s) cracked it.",

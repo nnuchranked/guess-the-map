@@ -1,15 +1,17 @@
-"""When does the next daily map appear?"""
+"""When does the next map appear?"""
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import config
 
+# The schedule is a fixed grid: every MAP_INTERVAL_HOURS, counted from this day at DAILY_RESET_HOUR_UTC.
+_ANCHOR_DAY = datetime(2026, 1, 1, tzinfo=UTC)
+
 
 def next_reset(now=None):
-    """Unix time of the next daily reset."""
+    """Unix time of the next map change."""
     now = time.time() if now is None else now
-    dt = datetime.fromtimestamp(now, UTC)
-    reset = dt.replace(hour=config.DAILY_RESET_HOUR_UTC, minute=0, second=0, microsecond=0)
-    if reset <= dt:
-        reset += timedelta(days=1)
-    return int(reset.timestamp())
+    anchor = _ANCHOR_DAY.replace(hour=config.DAILY_RESET_HOUR_UTC).timestamp()
+    step = round(config.MAP_INTERVAL_HOURS * 3600)
+    n = int((now - anchor) // step) + 1
+    return int(anchor + n * step)
