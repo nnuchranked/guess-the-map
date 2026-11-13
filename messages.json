@@ -1,0 +1,48 @@
+{
+  "round_start": [
+    "🗺️ A mystery map has appeared! Can you name it?",
+    "🔍 Squint harder... what map is this blurry beauty?",
+    "🎉 New round, who dis? Name that map!",
+    "🌫️ Emberemma map? Unmei map? Somebody else? ... Your call!",
+    "📸 Someone sneezed on the camera. Guess the map anyway!"
+  ],
+  "correct_first": [
+    "🎉 Great guess, {user}! First try?! You absolute legend! **+{points} points** (total: {total})",
+    "🌟 Bullseye, {user}! Eyes like a hawk! **+{points} points** (total: {total})",
+    "🏆 WOW {user}, no hesitation, no mercy! **+{points} points** (total: {total})",
+    "🥳 Nailed it on the first go, {user}! **+{points} points** (total: {total})",
+    "🔮 Are you psychic, {user}?! **+{points} points** (total: {total})",
+    "🎯 Direct hit! {user} knows their maps! **+{points} points** (total: {total})"
+  ],
+  "correct_second": [
+    "👏 Nice one, {user}! Second time's the charm! **+{points} points** (total: {total})",
+    "😄 Getting warmer and then BOOM, {user}! **+{points} points** (total: {total})",
+    "✨ Great recovery, {user}! **+{points} points** (total: {total})",
+    "🎊 The blur couldn't stop you, {user}! **+{points} points** (total: {total})",
+    "🙌 Two tries, one champion: {user}! **+{points} points** (total: {total})"
+  ],
+  "correct_third": [
+    "😅 Phew, just in time, {user}! **+{points} point** (total: {total})",
+    "🎈 Last chance and you NAILED it, {user}! **+{points} point** (total: {total})",
+    "🍀 Clutch guess, {user}! **+{points} point** (total: {total})",
+    "💪 Never give up, never surrender, {user}! **+{points} point** (total: {total})",
+    "🥹 Sweet relief! Well done, {user}! **+{points} point** (total: {total})"
+  ],
+  "wrong_guess": [
+    "😜 Not quite, {user}! Here's a clearer look. {attempts_left} left!",
+    "🙈 Oof, close but no cigar! Less blur for you, {user}. {attempts_left} left!",
+    "🤔 Hmm, nope! Let me wipe the lens a bit... {attempts_left} left!",
+    "🎈 Nice try, {user}! Squint at this one. {attempts_left} left!",
+    "🧐 Not that one! The picture's getting sharper... {attempts_left} left!"
+  ],
+  "out_of_attempts": [
+    "🫠 That's all your tries, {user}! Cheer on the others!",
+    "🙃 Out of guesses, {user}. The mystery lives on!",
+    "😅 No more attempts left, {user}. Better luck next map!"
+  ],
+  "timeout": [
+    "⏰ Time's up! Nobody got it. It was **{map_name}**!",
+    "🤷 The map stays a mystery no more... it was **{map_name}**!",
+    "🐌 Too slow, everyone! The answer was **{map_name}**. Next one's yours!"
+  ]
+}
