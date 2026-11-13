@@ -1,5 +1,6 @@
 import asyncio
 import difflib
+import html
 import json
 import logging
 import os
@@ -12,9 +13,9 @@ import config
 
 log = logging.getLogger(__name__)
 
-# Matches https://imgur.com/radiant-growth-qPUtYFb, imgur.com/qPUtYFb, i.imgur.com/qPUtYFb.png
+
 _ID_RE = re.compile(
-    r"imgur\.com/(?:[^/?#]*-)?([A-Za-z0-9]{5,10})(?:\.[A-Za-z]{3,4})?/?(?:[?#].*)?$"
+    r"imgur\.com/(?:gallery/)?(?:[^/?#]*-)?([A-Za-z0-9]{5,10})(?:\.[A-Za-z]{3,4})?/?(?:[?#].*)?$"
 )
 
 
@@ -31,6 +32,21 @@ def normalize(text):
     return text.replace(" ", "")
 
 
+def _ascii_part(name):
+    """'闲暇时光 Leisure time' -> ' Leisure time', so players can guess the English part alone."""
+    text = unicodedata.normalize("NFKD", name)
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    return re.sub(r"[^\x00-\x7F]+", " ", text)
+
+
+def _answers(name, aliases):
+    variants = [name, *aliases]
+    ascii_name = _ascii_part(name)
+    if len(normalize(ascii_name)) >= 3:
+        variants.append(ascii_name)
+    return {a for a in map(normalize, variants) if a}
+
+
 def creators_text(game_map):
     names = [c.get("username") for c in game_map.get("creators") or [] if c.get("username")]
     return ", ".join(names) if names else "Unknown"
@@ -38,7 +54,7 @@ def creators_text(game_map):
 
 def parse_maps(raw):
     """Turn the API's JSON into playable map dicts."""
-    if isinstance(raw, dict):
+    if isinstance(raw, dict):                 # accept {"levels": [...]} style wrappers too
         raw = next((v for v in raw.values() if isinstance(v, list)), None)
     if not isinstance(raw, list):
         raise TypeError("unexpected API format")
@@ -47,13 +63,23 @@ def parse_maps(raw):
         if not isinstance(m, dict):
             skipped += 1
             continue
-        m = dict(m)
+        m = dict(m)                           # copy: never modify the raw API data
+        m["name"] = html.unescape(str(m.get("name") or "")).strip()   # "Aren&#39;t" -> "Aren't"
         mid = imgur_id(m.get("imgur_url"))
-        if m.get("hidden") or m.get("under_review") or not mid or not m.get("name"):
+        if (
+            m.get("hidden")
+            or (config.EXCLUDE_UNDER_REVIEW and m.get("under_review"))
+            or (config.ONLY_TOURNAMENT_LEGAL and not m.get("tournament_legal"))
+            or not mid
+            or not m["name"]
+        ):
             skipped += 1
             continue
         m["id"] = mid
-        m["_answers"] = {normalize(a) for a in [m["name"], *m.get("aliases", [])]} - {""}
+        m["_answers"] = _answers(m["name"], m.get("aliases", []))
+        if not m["_answers"]:                 # e.g. a name made only of symbols: nobody can type it
+            skipped += 1
+            continue
         maps.append(m)
     log.info("Loaded %d maps (%d skipped)", len(maps), skipped)
     return maps
@@ -69,7 +95,7 @@ def _save(raw):
     tmp = config.MAPS_FALLBACK_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(raw, f)
-    os.replace(tmp, config.MAPS_FALLBACK_FILE)      # atomic: never leaves a half-written file
+    os.replace(tmp, config.MAPS_FALLBACK_FILE)
 
 
 async def load_maps(session):
@@ -92,8 +118,35 @@ async def load_maps(session):
     try:
         await asyncio.to_thread(_save, raw)
     except OSError as e:
-        log.warning("Couldn't save the maps copy: %s", e)   # fresh maps are still used
+        log.warning("Couldn't save the maps copy: %s", e)
     return maps
+
+
+def build_suggestions(maps):
+    """Unique map names (with their normalized form) for autocomplete, sorted A-Z."""
+    seen, index = set(), []
+    for m in maps:
+        key = m["name"].casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        index.append((m["name"][:100], normalize(m["name"])))     # Discord: max 100 characters
+    index.sort(key=lambda item: item[0].casefold())
+    return index
+
+
+def suggest(index, current, limit):
+    """Names starting with what was typed come first, then names that merely contain it."""
+    q = normalize(current)
+    if len(q) < config.AUTOCOMPLETE_MIN_CHARS:
+        return []
+    starts, contains = [], []
+    for name, norm in index:
+        if norm.startswith(q):
+            starts.append(name)
+        elif q in norm:
+            contains.append(name)
+    return (starts + contains)[:limit]
 
 
 def is_match(guess, game_map):

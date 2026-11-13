@@ -1,10 +1,8 @@
-import asyncio
 import logging
 import os
 import random
 import secrets
 import time
-from collections import deque
 from dataclasses import dataclass, field
 
 import aiohttp
@@ -15,7 +13,8 @@ from discord.ext import tasks
 import config
 import db
 import images
-from maps import creators_text, is_match, load_maps
+from daily import next_reset
+from maps import build_suggestions, creators_text, is_match, load_maps, suggest
 from messages import Messages
 
 try:
@@ -36,10 +35,9 @@ class Round:
     channel_id: int
     game_map: dict
     path: str
-    attempts: dict = field(default_factory=dict)   # user_id -> guesses used
-    finished: bool = False
-    timeout_task: asyncio.Task | None = None
-    message: discord.Message | None = None
+    message_id: int | None = None
+    used: dict = field(default_factory=dict)
+    solved: set = field(default_factory=set)
 
 
 class GuessModal(discord.ui.Modal, title="Guess the map"):
@@ -55,33 +53,37 @@ class GuessModal(discord.ui.Modal, title="Guess the map"):
 
 class GuessView(discord.ui.View):
     def __init__(self, bot):
-        super().__init__(timeout=config.ROUND_SECONDS + 60)
+        super().__init__(timeout=None)            # persistent: the button keeps working after restarts
         self.bot = bot
 
-    @discord.ui.button(label="Make a guess", emoji="🔍", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Make a guess", emoji="🔍", style=discord.ButtonStyle.primary,
+                       custom_id="guessmap:guess")
     async def guess_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(GuessModal(self.bot))
 
 
 class GuessBot(discord.Client):
     def __init__(self):
-        super().__init__(intents=discord.Intents.default())   # no privileged intents needed
+        super().__init__(intents=discord.Intents.default())
         self.tree = app_commands.CommandTree(self)
         self.maps = []
         self.msgs = Messages(config.MESSAGES_FILE)
-        self.rounds = {}                             # channel_id -> Round
-        self.recent = {}                             # guild_id -> deque of recent map ids
-        self.bad = set()                             # map ids whose image failed to download
+        self.rounds = {}                              # channel_id -> Round
+        self.bad = set()                              # map ids whose image failed to download
+        self.next_try = {}                            # channel_id -> earliest retry time after a failure
         self.session = None
+        self._index = []                              # autocomplete index
+        self._index_for = None
 
-    # ---------------------------------------------------------------- setup
     async def setup_hook(self):
         self.session = aiohttp.ClientSession()
         self.maps = await load_maps(self.session)
         db.init()
+        await self.restore_rounds()
+        self.add_view(GuessView(self))                # re-attach the button on existing messages
         self.tree.add_command(make_group(self))
         self.tree.add_command(make_guess_command(self))
-        dev_guild = os.environ.get("DEV_GUILD_ID")   # optional: instant command sync while testing
+        dev_guild = os.environ.get("DEV_GUILD_ID")    # instant command sync while testing
         if dev_guild:
             guild = discord.Object(int(dev_guild))
             self.tree.copy_global_to(guild=guild)
@@ -99,66 +101,91 @@ class GuessBot(discord.Client):
     async def on_ready(self):
         log.info("Logged in as %s", self.user)
 
-    # --------------------------------------------------------- round logic
+    async def restore_rounds(self):
+        """After a restart, pick today's maps (and everyone's progress) back up from the database."""
+        by_id = {m["id"]: m for m in self.maps}
+        for channel_id, guild_id, map_id, message_id in db.load_rounds():
+            game_map = by_id.get(map_id)
+            path = await images.ensure_image(self.session, game_map) if game_map else None
+            if not path:
+                log.warning("Dropping saved round in channel %s: map %s is unavailable", channel_id, map_id)
+                db.delete_round(channel_id)
+                continue
+            rnd = Round(guild_id, channel_id, game_map, path, message_id)
+            for user_id, used, solved in db.load_attempts(channel_id):
+                rnd.used[user_id] = used
+                if solved:
+                    rnd.solved.add(user_id)
+            self.rounds[channel_id] = rnd
+            log.info("Restored the map in channel %s (%d players so far)", channel_id, len(rnd.used))
+
+    def suggestions(self):
+        """Autocomplete index for the current map list (cached until the list is replaced)."""
+        if self._index_for is not self.maps:
+            self._index = build_suggestions(self.maps)
+            self._index_for = self.maps
+        return self._index
+
     async def pick_map(self, guild_id):
-        recent = self.recent.setdefault(
-            guild_id, deque(maxlen=min(config.RECENT_MAPS_MEMORY, max(0, len(self.maps) - 1)))
-        )
+        limit = min(config.RECENT_MAPS_MEMORY, max(0, len(self.maps) - 1))
+        recent = set(db.recent_ids(guild_id, limit))
         pool = [m for m in self.maps if m["id"] not in recent and m["id"] not in self.bad]
+        if not pool:
+            pool = [m for m in self.maps if m["id"] not in self.bad]
+        if not pool:
+            self.bad.clear()
+            pool = list(self.maps)
         random.shuffle(pool)
         for m in pool[:10]:                           # a few tries in case an image is dead
             path = await images.ensure_image(self.session, m)
             if path:
-                recent.append(m["id"])
+                db.add_recent(guild_id, m["id"])
                 return m, path
             self.bad.add(m["id"])
         return None
 
     async def start_round(self, channel):
-        """Returns an error string, or None on success."""
-        if channel.id in self.rounds:
-            return "A round is already running in that channel."
+        """Post a new map in `channel`, replacing the current one. Returns an error string or None."""
         picked = await self.pick_map(channel.guild.id)
         if not picked:
-            return "Couldn't fetch any map image right now (Imgur down or rate-limited?). Try again later."
-        if channel.id in self.rounds:                 # someone else started one while we downloaded
-            return "A round is already running in that channel."
+            return "Couldn't fetch a map image right now (Imgur down or rate-limited?). Try again later."
         game_map, path = picked
-        rnd = Round(channel.guild.id, channel.id, game_map, path)
-        self.rounds[channel.id] = rnd
+        old = self.rounds.get(channel.id)
+        if old:
+            await self.close_round(channel, old)
+
+        points = "/".join(str(p) for p in config.POINTS_BY_ATTEMPT)
+        text = (
+            self.msgs.pick("round_start")
+            + "\nUse **/guess** or tap the button below. Your guesses are private (not even Ivory can read them!) "
+            f"You get {config.MAX_ATTEMPTS} tries: correct on try 1/2/3 = **{points}** points."
+            f"\nNext map <t:{next_reset()}:R>."
+        )
         try:
-            points = "/".join(str(p) for p in config.POINTS_BY_ATTEMPT)
-            text = self.msgs.pick("round_start", minutes=config.ROUND_SECONDS // 60) + (
-                f"\nUse **/guess** or tap the button below. Your guesses are **private**! "
-                f"Everyone gets **{config.MAX_ATTEMPTS} tries**; correct on try 1/2/3 = **{points}** points."
-            )
-            rnd.message = await channel.send(
+            message = await channel.send(
                 text, file=await images.blurred_file(path, 0), view=GuessView(self))
         except discord.HTTPException as e:
-            self.rounds.pop(channel.id, None)
-            log.warning("Couldn't post round in %s: %s", channel.id, e)
+            log.warning("Couldn't post the map in %s: %s", channel.id, e)
             return "I couldn't post in that channel (check my permissions)."
-        rnd.timeout_task = asyncio.create_task(self._timeout(rnd, channel))
+        self.rounds[channel.id] = Round(channel.guild.id, channel.id, game_map, path, message.id)
+        db.save_round(channel.id, channel.guild.id, game_map["id"], message.id, int(time.time()))
         return None
 
-    async def _timeout(self, rnd, channel):
-        await asyncio.sleep(config.ROUND_SECONDS)
-        if rnd.finished:
-            return
-        rnd.finished = True
-        if self.rounds.get(rnd.channel_id) is rnd:
-            del self.rounds[rnd.channel_id]
-        await self.close_view(rnd)
-        await self.reveal(channel, rnd, self.msgs.pick("timeout", map_name=rnd.game_map["name"]))
-
-    async def close_view(self, rnd):
-        if rnd.message:
+    async def close_round(self, channel, rnd):
+        """End a map: remove its button and publicly reveal the answer."""
+        self.rounds.pop(rnd.channel_id, None)
+        db.delete_round(rnd.channel_id)
+        if rnd.message_id:
             try:
-                await rnd.message.edit(view=None)
+                await channel.get_partial_message(rnd.message_id).edit(view=None)
             except discord.HTTPException:
                 pass
+        text = self.msgs.pick("day_over", map_name=rnd.game_map["name"], solvers=len(rnd.solved))
+        await self.reveal(channel, rnd, text)
 
-    async def reveal(self, channel, rnd, text, interaction=None):
+    async def reveal(self, channel, rnd, text, interaction=None, ephemeral=False):
+        """Show the answer: name, creator, code and the unblurred image.
+        With an interaction (+ ephemeral=True) only that player sees it."""
         m = rnd.game_map
         fname = f"{secrets.token_hex(6)}.jpg"
         embed = discord.Embed(title=m["name"], description=text, colour=discord.Colour.gold())
@@ -169,47 +196,72 @@ class GuessBot(discord.Client):
         try:
             file = discord.File(rnd.path, filename=fname)
             if interaction:
-                await interaction.response.send_message(embed=embed, file=file)   # public announcement
+                await interaction.response.send_message(embed=embed, file=file, ephemeral=ephemeral)
             else:
                 await channel.send(embed=embed, file=file)
         except discord.HTTPException as e:
-            log.warning("Reveal failed in %s: %s", channel.id, e)
+            log.warning("Reveal failed in %s: %s", rnd.channel_id, e)
 
-    # ------------------------------------------------------------ guessing
+    async def _say(self, interaction, text):
+        """A private (only-you-see-it) reply."""
+        try:
+            await interaction.response.send_message(text, ephemeral=True)
+        except discord.HTTPException as e:
+            log.warning("Reply failed: %s", e)
+
+    async def _announce(self, channel, name, attempt, points):
+        """Public 'X solved it!' message that doesn't reveal the answer."""
+        if not config.ANNOUNCE_CORRECT or channel is None or "announce_correct" not in self.msgs.data:
+            return
+        try:
+            await channel.send(
+                self.msgs.pick("announce_correct", user=name, attempt=attempt, points=points),
+                allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException as e:
+            log.warning("Announcement failed: %s", e)
+
     async def handle_guess(self, interaction, text):
-        """Called by /guess and by the button's pop-up. Feedback is private (ephemeral);
-        only a correct guess is announced publicly."""
+        """Called by /guess and by the button's pop-up. Everything the player sees is private."""
         rnd = self.rounds.get(interaction.channel_id)
-        if not rnd or rnd.finished:
-            await interaction.response.send_message("There's no active round in this channel.", ephemeral=True)
+        if not rnd:
+            await self._say(interaction, "There's no active map in this channel right now.")
             return
         text = (text or "").strip()
         if not text:
-            await interaction.response.send_message("Type a map name first!", ephemeral=True)
+            await self._say(interaction, "Type a map name first!")
+            return
+        if len(text) > config.MAX_GUESS_LENGTH:
+            await self._say(interaction,
+                            f"That's too long for a map name (max {config.MAX_GUESS_LENGTH} characters).")
             return
 
         uid = interaction.user.id
-        used = rnd.attempts.get(uid, 0)
-        if used >= config.MAX_ATTEMPTS:
-            await interaction.response.send_message(
-                "You've used all your tries this round. Cheer on the others!", ephemeral=True)
+        if uid in rnd.solved:
+            await self._say(interaction, f"Good job on today's Guess the Map! The next map appears <t:{next_reset()}:R>.")
             return
-        rnd.attempts[uid] = used + 1                  # count it before any await (no races)
+        used = rnd.used.get(uid, 0)
+        if used >= config.MAX_ATTEMPTS:
+            await self._say(interaction,
+                            f"You've used all your tries on this map. Good luck next time! The next one appears <t:{next_reset()}:R>.")
+            return
+
+        correct = is_match(text, rnd.game_map)
+        rnd.used[uid] = used + 1                      # count it before any await (no races)
+        if correct:
+            rnd.solved.add(uid)
+        db.set_attempt(rnd.channel_id, uid, used + 1, correct)
         name = interaction.user.display_name
+        map_name = rnd.game_map["name"]
 
         try:
-            if is_match(text, rnd.game_map):
-                rnd.finished = True
-                if rnd.timeout_task:
-                    rnd.timeout_task.cancel()
-                self.rounds.pop(rnd.channel_id, None)
+            if correct:
                 points = config.POINTS_BY_ATTEMPT[used]
                 total = db.add_points(rnd.guild_id, uid, points)
                 key = CORRECT_KEYS[min(used, len(CORRECT_KEYS) - 1)]
-                msg = self.msgs.pick(key, user=name, points=points, total=total,
-                                     map_name=rnd.game_map["name"])
-                await self.reveal(interaction.channel, rnd, msg, interaction=interaction)
-                await self.close_view(rnd)
+                msg = self.msgs.pick(key, user=name, points=points, total=total, map_name=map_name)
+                # the answer is shown ONLY to the person who guessed it
+                await self.reveal(interaction.channel, rnd, msg, interaction=interaction, ephemeral=True)
+                await self._announce(interaction.channel, name, used + 1, points)
                 return
 
             left = config.MAX_ATTEMPTS - (used + 1)
@@ -218,24 +270,32 @@ class GuessBot(discord.Client):
                 file = await images.blurred_file(rnd.path, used + 1)   # less blur each try
                 await interaction.response.send_message(msg, file=file, ephemeral=True)
             else:
-                await interaction.response.send_message(
-                    self.msgs.pick("out_of_attempts", user=name), ephemeral=True)
+                # final miss: reveal the map, but only to this player
+                msg = self.msgs.pick("out_of_attempts", user=name, map_name=map_name)
+                await self.reveal(interaction.channel, rnd, msg, interaction=interaction, ephemeral=True)
         except discord.HTTPException as e:
             log.warning("Guess response failed: %s", e)
 
-    # ------------------------------------------------------ automatic rounds
+    # ------------------------------------------------------ automatic maps
     @tasks.loop(seconds=30)
     async def auto_rounds(self):
         try:
             now = int(time.time())
-            for guild_id, channel_id, interval in db.due_settings(now):
-                db.schedule_next(guild_id, now + interval * 60)   # schedule first: no pile-ups
+            for guild_id, channel_id, next_at in db.all_settings():
+                due = next_at <= now
+                if not due and (channel_id in self.rounds or self.next_try.get(channel_id, 0) > now):
+                    continue                          # nothing to do for this server
                 channel = self.get_channel(channel_id)
-                if not isinstance(channel, discord.TextChannel) or channel.id in self.rounds:
+                if not isinstance(channel, discord.TextChannel):
                     continue
                 err = await self.start_round(channel)
                 if err:
-                    log.warning("Auto round in guild %s failed: %s", guild_id, err)
+                    log.warning("Daily map in guild %s failed: %s", guild_id, err)
+                    self.next_try[channel_id] = now + 600
+                    if due:
+                        db.schedule_next(guild_id, now + 600)      # try again in 10 minutes
+                elif due:
+                    db.schedule_next(guild_id, next_reset(now))
         except Exception:
             log.exception("auto_rounds crashed this tick")
 
@@ -245,7 +305,7 @@ class GuessBot(discord.Client):
 
     @tasks.loop(hours=config.MAPS_REFRESH_HOURS)
     async def refresh_maps(self):
-        if self.refresh_maps.current_loop == 0:        # already loaded at startup
+        if self.refresh_maps.current_loop == 0:       # already loaded at startup
             return
         try:
             self.maps = await load_maps(self.session)
@@ -254,7 +314,6 @@ class GuessBot(discord.Client):
             log.exception("Map refresh failed; keeping the current list")
 
 
-# ------------------------------------------------------------------ commands
 def make_group(bot):
     group = app_commands.Group(name="guessmap", description="Guess the map game", guild_only=True)
 
@@ -264,10 +323,9 @@ def make_group(bot):
         await interaction.response.send_message("You need the Manage Server permission.", ephemeral=True)
         return False
 
-    @group.command(name="setup", description="Post a map automatically in a channel")
-    @app_commands.describe(channel="Where rounds are posted", interval_minutes="Minutes between rounds")
-    async def setup(interaction: discord.Interaction, channel: discord.TextChannel,
-                    interval_minutes: app_commands.Range[int, 5, 10080] = config.DEFAULT_INTERVAL_MINUTES):
+    @group.command(name="setup", description="Post a new map every day in a channel")
+    @app_commands.describe(channel="Where the daily map is posted")
+    async def setup(interaction: discord.Interaction, channel: discord.TextChannel):
         if not await require_admin(interaction):
             return
         perms = channel.permissions_for(interaction.guild.me)
@@ -276,25 +334,28 @@ def make_group(bot):
                 "I need Send Messages, Attach Files, Embed Links and Read Message History in that channel.",
                 ephemeral=True)
             return
-        db.set_schedule(interaction.guild_id, channel.id, interval_minutes, int(time.time()))
+        fresh = channel.id not in bot.rounds
+        db.set_schedule(interaction.guild_id, channel.id, 1440, int(time.time()) if fresh else next_reset())
+        first = "the first one appears within a minute" if fresh else "the current map stays until then"
         await interaction.response.send_message(
-            f"Done! A new map will appear in {channel.mention} every {interval_minutes} minutes "
-            f"(first one within a minute).", ephemeral=True)
+            f"Done! A new map will appear in {channel.mention} every day at "
+            f"{config.DAILY_RESET_HOUR_UTC:02d}:00 UTC ({first}). "
+            "Use `/guessmap newmap` any time to skip ahead.", ephemeral=True)
 
-    @group.command(name="disable", description="Stop automatic rounds")
+    @group.command(name="disable", description="Stop the daily maps")
     async def disable(interaction: discord.Interaction):
         if not await require_admin(interaction):
             return
         db.disable(interaction.guild_id)
-        await interaction.response.send_message("Automatic rounds turned off.", ephemeral=True)
+        await interaction.response.send_message("Daily maps turned off.", ephemeral=True)
 
-    @group.command(name="start", description="Start a round now in this channel")
-    async def start(interaction: discord.Interaction):
+    @group.command(name="newmap", description="Admin: skip ahead and post a brand-new map right now")
+    async def newmap(interaction: discord.Interaction):
         if not await require_admin(interaction):
             return
         await interaction.response.defer(ephemeral=True)
         err = await bot.start_round(interaction.channel)
-        await interaction.followup.send(err or "Round started!", ephemeral=True)
+        await interaction.followup.send(err or "New map posted! The previous answer was revealed.", ephemeral=True)
 
     @group.command(name="leaderboard", description="Show the top players")
     async def leaderboard(interaction: discord.Interaction):
@@ -315,7 +376,7 @@ def make_group(bot):
     async def reload(interaction: discord.Interaction):
         if not await require_admin(interaction):
             return
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True)   # fetching can take longer than 3 seconds
         try:
             new_maps = await load_maps(bot.session)
             bot.msgs.load()
@@ -330,11 +391,19 @@ def make_group(bot):
 
 
 def make_guess_command(bot):
-    @app_commands.command(name="guess", description="Privately guess the current map")
+    @app_commands.command(name="guess", description="Privately guess today's map")
     @app_commands.describe(name="Your guess for the map's name")
     @app_commands.guild_only()
-    async def guess(interaction: discord.Interaction, name: app_commands.Range[str, 1, config.MAX_GUESS_LENGTH]): # type: ignore
+    async def guess(interaction: discord.Interaction, name: str):
         await bot.handle_guess(interaction, name)
+
+    @guess.autocomplete("name")
+    async def guess_autocomplete(interaction: discord.Interaction, current: str):
+        rnd = bot.rounds.get(interaction.channel_id)
+        if not rnd or interaction.user.id in rnd.solved or rnd.used.get(interaction.user.id, 0) >= config.MAX_ATTEMPTS:
+            return []                             # no map here, or this player is already finished
+        names = suggest(bot.suggestions(), current, config.AUTOCOMPLETE_MAX_RESULTS)
+        return [app_commands.Choice(name=n, value=n) for n in names]
 
     return guess
 

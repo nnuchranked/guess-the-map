@@ -73,6 +73,6 @@ def _blur(path, level_index):
 
 
 async def blurred_file(path, level_index):
-    """A discord.File with a random filename (so the name can't leak the answer)."""
+    """A discord.File with a random filename."""
     buf = await asyncio.to_thread(_blur, path, level_index)
     return discord.File(buf, filename=f"{secrets.token_hex(6)}.jpg")

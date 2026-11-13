@@ -1,10 +1,10 @@
 {
   "round_start": [
-    "🗺️ A mystery map has appeared! Can you name it?",
-    "🔍 Squint harder... what map is this blurry beauty?",
-    "🎉 New round, who dis? Name that map!",
+    "🗺️ A mystery legal map has appeared! Can you name it?",
+    "🔍 Squint harder... what legal map is this blurry beauty?",
+    "🎉 New round, who dis? Name that legal map!",
     "🌫️ Emberemma map? Unmei map? Somebody else? ... Your call!",
-    "📸 Someone sneezed on the camera. Guess the map anyway!"
+    "📸 Someone sneezed on the camera. Guess the legal map anyway!"
   ],
   "correct_first": [
     "🎉 Great guess, {user}! First try?! You absolute legend! **+{points} points** (total: {total})",
@@ -22,9 +22,9 @@
     "🙌 Two tries, one champion: {user}! **+{points} points** (total: {total})"
   ],
   "correct_third": [
-    "😅 Phew, just in time, {user}! **+{points} point** (total: {total})",
+    "😅 Impossible! **+{points} point** (total: {total})",
     "🎈 Last chance and you NAILED it, {user}! **+{points} point** (total: {total})",
-    "🍀 Clutch guess, {user}! **+{points} point** (total: {total})",
+    "🍀 Amazing guess, {user}! **+{points} point** (total: {total})",
     "💪 Never give up, never surrender, {user}! **+{points} point** (total: {total})",
     "🥹 Sweet relief! Well done, {user}! **+{points} point** (total: {total})"
   ],
@@ -36,13 +36,18 @@
     "🧐 Not that one! The picture's getting sharper... {attempts_left} left!"
   ],
   "out_of_attempts": [
-    "🫠 That's all your tries, {user}! Cheer on the others!",
-    "🙃 Out of guesses, {user}. The mystery lives on!",
-    "😅 No more attempts left, {user}. Better luck next map!"
+    "🫠 That's all your tries, {user}! The answer was **{map_name}**. Don't share it, **the horse is watching.**",
+    "🙃 Out of guesses, {user}! Here's what it was. Don't share it, **the horse is watching.**",
+    "😅 No tries left, {user}. Better luck with tomorrow's map! And don't share it, **the horse is watching.**"
   ],
-  "timeout": [
-    "⏰ Time's up! Nobody got it. It was **{map_name}**!",
-    "🤷 The map stays a mystery no more... it was **{map_name}**!",
-    "🐌 Too slow, everyone! The answer was **{map_name}**. Next one's yours!"
+  "announce_correct": [
+    "🎉 **{user}** just cracked today's map on try {attempt}! (+{points} points)",
+    "🔍 Sharp eyes! **{user}** named the map on try {attempt} for **{points}** points!",
+    "🏆 **{user}** solved it on try {attempt}! No spoilers, folks!"
+  ],
+  "day_over": [
+    "🌙 That's a wrap on the last map! It was **{map_name}**. {solvers} player(s) cracked it.",
+    "📖 The answer to the last map was **{map_name}**! {solvers} got it. A fresh one is below!",
+    "⏰ Time's up for the last map! It was **{map_name}** ({solvers} solved it)."
   ]
 }
