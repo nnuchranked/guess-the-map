@@ -200,42 +200,26 @@ async def load_maps(session):
 
 
 def build_suggestions(maps):
-    """Unique map names, creator names and combined names for autocomplete."""
+    """One autocomplete suggestion per map, including its creators."""
     seen, index = set(), []
 
     for m in maps:
         authors = _creator_names(m)
 
-        candidates = [
-            m["name"],
-            *authors,
-        ]
-
-        # Combined map + creator suggestions.
-        candidates.extend(
-            f"{m['name']} | by {author}"
-            for author in authors
+        candidate = (
+            f"{m['name']} | by {', '.join(authors)}"
+            if authors
+            else m["name"]
         )
 
-        if authors:
-            candidates.append(
-                f"{m['name']} | by {', '.join(authors)}"
-            )
+        candidate = candidate[:100]
+        key = normalize(candidate)
 
-        for candidate in candidates:
-            candidate = str(candidate).strip()
-            if not candidate:
-                continue
+        if not key or key in seen:
+            continue
 
-            # Discord limits autocomplete choice names to 100 characters.
-            candidate = candidate[:100]
-            key = candidate.casefold()
-
-            if key in seen:
-                continue
-
-            seen.add(key)
-            index.append((candidate, normalize(candidate)))
+        seen.add(key)
+        index.append((candidate, key))
 
     index.sort(key=lambda item: item[0].casefold())
     return index

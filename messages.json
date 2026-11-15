@@ -1,53 +1,296 @@
 {
-  "round_start": [
-    "🗺️ A mystery legal map has appeared! Can you name it?",
-    "🔍 Squint harder... what legal map is this blurry beauty?",
-    "🎉 New round, who dis? Name that legal map!",
-    "🌫️ Emberemma map? Unmei map? Somebody else? ... Your call!",
-    "📸 Someone sneezed on the camera. Guess the legal map anyway!"
-  ],
-  "correct_first": [
-    "🎉 Great guess, {user}! First try?! You absolute legend! **+{points} points** (total: {total})",
-    "🌟 Bullseye, {user}! You got eyes like Raito! **+{points} points** (total: {total})",
-    "🏆 WOW {user}!, no hesitation, no mercy! **+{points} points** (total: {total})",
-    "🥳 Nailed it on the first go, {user}, Kreuz would be proud! **+{points} points** (total: {total})",
-    "🔮 Are you psychic, {user}?! **+{points} points** (total: {total})",
-    "🎯 Direct hit! {user} knows the maps, Bojack would be proud! **+{points} points** (total: {total})"
-  ],
-  "correct_second": [
-    "👏 Nice one, {user}! Second time's the charm! **+{points} points** (total: {total})",
-    "😄 Getting warmer and then BOOM, {user}! **+{points} points** (total: {total})",
-    "✨ Great recovery, {user}! **+{points} points** (total: {total})",
-    "🎊 The blur couldn't stop you, {user}! **+{points} points** (total: {total})",
-    "🙌 Two tries, one champion: {user}! **+{points} points** (total: {total})"
-  ],
-  "correct_third": [
-    "😅 Impossible! **+{points} point** (total: {total})",
-    "🎈 Last chance and you NAILED it, {user}! **+{points} point** (total: {total})",
-    "🍀 Amazing guess, {user}! **+{points} point** (total: {total})",
-    "💪 Never give up, never surrender, {user}! **+{points} point** (total: {total})",
-    "🥹 Sweet relief! Well done, {user}! **+{points} point** (total: {total})"
-  ],
-  "wrong_guess": [
-    "😜 Not quite, {user}! Here's a clearer look. {attempts_left} left!",
-    "🙈 Oof, close but Not That One! Less blur for you, {user}. {attempts_left} left!",
-    "🤔 Hmm, nope! Let me wipe the lens a bit... {attempts_left} left!",
-    "🎈 Nice try, {user}! Squint at this one. {attempts_left} left!",
-    "🧐 Not that one! The picture's getting sharper... {attempts_left} left!"
-  ],
-  "out_of_attempts": [
-    "🫠 That's all your tries, {user}! The answer was **{map_name}**. Don't share it, **the horse is watching.**",
-    "🙃 Out of guesses, {user}! Here's what it was. Don't share it, **the horse is watching.**",
-    "😅 No tries left, {user}. Better luck with the next map! And don't share it, **the horse is watching.**"
-  ],
-  "announce_correct": [
-    "🎉 **{user}** just guessed today's map on try {attempt}! (+{points} points)",
-    "🔍 Sharp eyes! **{user}** named the map on try {attempt} for **{points}** points!",
-    "🏆 **{user}** solved it on try {attempt}! No spoilers, folks! (or Ivory gets mad)"
-  ],
-  "day_over": [
-    "🌙 That's a wrap on the last map! It was **{map_name}**. {solvers} player(s) cracked it.",
-    "📖 The answer to the last map was **{map_name}**! {solvers} got it. A fresh one is below!",
-    "⏰ Time's up for the last map! It was **{map_name}** ({solvers} solved it)."
-  ]
+  "common": {
+    "default_embed_title": "Guess the Map",
+    "creator_field": "Creator",
+    "code_field": "Code",
+    "filters_field": "Filters applied",
+    "permission_title": "Permission required",
+    "leaderboard_controls_title": "Leaderboard controls",
+    "image_unavailable_title": "Image unavailable",
+    "challenge_updated_title": "Difficulty updated",
+    "challenge_ended_title": "Challenge ended",
+    "map_ended_line": "*This map has ended.*",
+    "challenge_replaced_line": "*This challenge has been replaced.*",
+    "utc_hour": "{hour}:00 UTC"
+  },
+  "buttons": {
+    "start_guessing": "Start guessing",
+    "play_yourself": "Play yourself",
+    "easy": "Easy · Pixelated",
+    "normal": "Normal · Blur",
+    "hard": "Hard · Blur + Inverted",
+    "impossible": "Impossible · Blur + Inverted + Zoom",
+    "start_zoom_challenge": "Start zoom-out challenge",
+    "skip_infinite": "Skip this map",
+    "next_infinite": "Next random map",
+    "previous_page": "Previous",
+    "next_page": "Next"
+  },
+  "modes": {
+    "easy": {
+      "label": "Easy · Pixelated",
+      "name": "Easy"
+    },
+    "normal": {
+      "label": "Normal · Blur",
+      "name": "Normal"
+    },
+    "hard": {
+      "label": "Hard · Blur + Inverted",
+      "name": "Hard"
+    },
+    "impossible": {
+      "label": "Impossible · Blur + Inverted + Zoom",
+      "name": "Impossible"
+    },
+    "zoom": {
+      "label": "Zoom-out",
+      "name": "Zoom-out"
+    }
+  },
+  "leaderboard": {
+    "empty": "No points yet. Be the first to play and make Nn proud!",
+    "solved_not_tracked": "Solved: *not tracked yet*",
+    "avg_not_available": "Avg attempts: *n/a*",
+    "solved_performance": "Solved **{solved}/{played}** ({rate:.1f}%)",
+    "avg_attempts": "Avg attempts when solved: **{average:.2f}**",
+    "row": "{rank_label} <@{user_id}> — **{points}** pts | {correct} correct | {performance} | {average}",
+    "main_title": "🏆 Guess the Map Leaderboard",
+    "challenge_title": "🏆 {mode_label} Challenge Leaderboard",
+    "full_suffix": " • Full",
+    "page_footer": "Page {page}/{pages} • {total} players",
+    "all_footer": "All {total} players",
+    "top_footer": "Top 10 • Solved/played is the success rate • Average attempts only counts solved maps",
+    "daily_title": "🏆 Guess the Map Leaderboard"
+  },
+  "main": {
+    "round_post_title": "🗺️ Guess the map!",
+    "round_post_description": [
+      "🗺️ A mystery legal map has appeared! Can you name it?\n\nThe map stays hidden until you start. Press **{start_button}** to reveal it privately and start your timer, then answer with {guess_command}. Autocomplete suggestions appear as you type, so don't type your guess in chat.\n\nYou get **{attempts} tries**. Points by attempt: **{points}**.\nEach attempt also earns a speed bonus of up to **+{bonus}**, which drops every {bonus_interval} seconds and hits zero at {bonus_cutoff} seconds.\n\nNext map <t:{next_reset}:R>.",
+      "🔍 Squint harder... what legal map is this blurry beauty?\n\nThe map stays hidden until you start. Press **{start_button}** to reveal it privately and start your timer, then answer with {guess_command}. Autocomplete suggestions appear as you type, so don't type your guess in chat.\n\nYou get **{attempts} tries**. Points by attempt: **{points}**.\nEach attempt also earns a speed bonus of up to **+{bonus}**, which drops every {bonus_interval} seconds and hits zero at {bonus_cutoff} seconds.\n\nNext map <t:{next_reset}:R>.",
+      "🎉 New round, who dis? Name that legal map!\n\nThe map stays hidden until you start. Press **{start_button}** to reveal it privately and start your timer, then answer with {guess_command}. Autocomplete suggestions appear as you type, so don't type your guess in chat.\n\nYou get **{attempts} tries**. Points by attempt: **{points}**.\nEach attempt also earns a speed bonus of up to **+{bonus}**, which drops every {bonus_interval} seconds and hits zero at {bonus_cutoff} seconds.\n\nNext map <t:{next_reset}:R>.",
+      "🌫️ Emberemma map? Unmei map? Somebody else? ... Your call!\n\nThe map stays hidden until you start. Press **{start_button}** to reveal it privately and start your timer, then answer with {guess_command}. Autocomplete suggestions appear as you type, so don't type your guess in chat.\n\nYou get **{attempts} tries**. Points by attempt: **{points}**.\nEach attempt also earns a speed bonus of up to **+{bonus}**, which drops every {bonus_interval} seconds and hits zero at {bonus_cutoff} seconds.\n\nNext map <t:{next_reset}:R>.",
+      "📸 Someone sneezed on the camera. Guess the legal map anyway!\n\nThe map stays hidden until you start. Press **{start_button}** to reveal it privately and start your timer, then answer with {guess_command}. Autocomplete suggestions appear as you type, so don't type your guess in chat.\n\nYou get **{attempts} tries**. Points by attempt: **{points}**.\nEach attempt also earns a speed bonus of up to **+{bonus}**, which drops every {bonus_interval} seconds and hits zero at {bonus_cutoff} seconds.\n\nNext map <t:{next_reset}:R>."
+    ],
+    "private_map_title": "🗺️ Your map",
+    "private_map_description": "Submit your answer with {guess_command}. Suggestions appear as you type.\n\nTries remaining: **{attempts_left}**\nPoints by attempt: **{points}**\n\nYour speed bonus drops every {bonus_interval} seconds and reaches zero after {bonus_cutoff} seconds.",
+    "no_active_map": "There's no active map in this channel right now.",
+    "already_solved": "You've already solved this map!",
+    "all_tries_used": "You've used all your tries on this map.",
+    "timer_running": "Your timer is already running. Submit your answer with {guess_command}.",
+    "start_first": "Press **{start_button}** on the map post first (or use `/guessmap play`).",
+    "already_solved_next": "You've already solved this one! The next map appears <t:{next_reset}:R>.",
+    "all_tries_next": "You've used all your tries on this map. The next one appears <t:{next_reset}:R>.",
+    "empty_guess": "Type a map name first!",
+    "guess_too_long": "That's too long for a map name (max {max_length} characters).",
+    "wrong_guess": [
+      "😜 Not quite, {user}! Here's a clearer look. {attempts_left} left!",
+      "🙈 Oof, close, but not that one! Less blur for you, {user}. {attempts_left} left!",
+      "🤔 Hmm, nope! Let Ivory wipe the lens a bit... {attempts_left} left!",
+      "🎈 Nice try, {user}! Squint at this one. {attempts_left} left!",
+      "🧐 Not that one! The picture's getting sharper... {attempts_left} left!"
+    ],
+    "wrong_guess_retry": "\n\nUse {guess_command} to try again. The timer for your next attempt starts with this image.",
+    "last_try_cannot_pass": "That's your last try, so you can't pass. Take a guess!",
+    "correct_first": [
+      "🎉 Great guess, {user}! First try?! You absolute legend!\n**+{points} points** (total: {total})",
+      "🌟 Bullseye, {user}! You've got eyes like Raito!\n**+{points} points** (total: {total})",
+      "🏆 WOW, {user}! No hesitation, no mercy!\n**+{points} points** (total: {total})",
+      "🥳 Nailed it on the first go, {user}! Kreuz would be proud!\n**+{points} points** (total: {total})",
+      "🔮 Are you psychic, {user}?!\n**+{points} points** (total: {total})",
+      "🎯 Direct hit! {user} knows their maps. Bojack would be proud!\n**+{points} points** (total: {total})"
+    ],
+    "correct_second": [
+      "👏 Nice one, {user}! Second time's the charm!\n**+{points} points** (total: {total})",
+      "😄 You BOOM like dynamite, {user}!\n**+{points} points** (total: {total})",
+      "✨ Great recovery, {user}!\n**+{points} points** (total: {total})",
+      "🎊 The blur couldn't stop you, {user}!\n**+{points} points** (total: {total})",
+      "🙌 Two tries, one champion: {user}!\n**+{points} points** (total: {total})"
+    ],
+    "correct_third": [
+      "😅 Impossible!\n**+{points} point** (total: {total})",
+      "🎈 Last chance, and you nailed it, {user}!\n**+{points} point** (total: {total})",
+      "🍀 Amazing guess, {user}!\n**+{points} point** (total: {total})",
+      "💪 Never give up, never surrender, {user}!\n**+{points} point** (total: {total})",
+      "🥹 Sweet relief! Well done, {user}!\n**+{points} point** (total: {total})"
+    ],
+    "speed_bonus_line": "\nSpeed bonus: **+{bonus}** ({elapsed:.1f}s)",
+    "out_of_attempts": [
+      "🫠 That's all your tries, {user}! The answer was **{map_name}**.\n\nDon't share it, **the horse is watching.**",
+      "🙃 Out of guesses, {user}! Here's what it was.\n\nDon't share it, **the horse is watching.**",
+      "😅 No tries left, {user}. Better luck with the next map!\n\nAnd don't share the answer, **the horse is watching.**"
+    ],
+    "day_over": [
+      "🌙 That's a wrap on the last map! It was **{map_name}**.\n\n{solvers} player(s) got it right.",
+      "📖 The answer to the last map was **{map_name}**!\n\n{solvers} player(s) got it. A fresh one is below!",
+      "⏰ Time's up for the last map! It was **{map_name}**.\n\n{solvers} player(s) solved it."
+    ],
+    "reveal_title": "{map_name}",
+    "announce_title": "🎉 Correct guess!",
+    "announce_correct": [
+      "🎉 **{user}** just guessed the current map on try {attempt}! (+{points} points)",
+      "🔍 Sharp eyes! **{user}** named the map on try {attempt} for **{points}** points!",
+      "🏆 **{user}** solved it on try {attempt}! No spoilers, folks, or Nn gets mad!",
+      "🐑 Sheep is proud of **{user}**, who solved it on try {attempt}!"
+    ],
+    "next_attempt_timer": "The timer for your next attempt starts with this image.",
+    "new_map_posted": "New map posted! The previous answer has been revealed.",
+    "map_fetch_failed": "I couldn't fetch a map image right now (Imgur down or rate-limited?). Please try again later.",
+    "map_post_failed": "I couldn't post in that channel. Please check my permissions.",
+    "map_post_failed_title": "Could not post map",
+    "map_post_success_title": "New map posted",
+    "map_start_error_title": "Could not start map",
+    "post_end_title": "🗺️ Guess the map",
+    "permission_missing_body": "I need these permissions in that channel:\nSend Messages, Attach Files, Embed Links and Read Message History.",
+    "permission_missing_title": "Missing permissions",
+    "setup_success_title": "Setup complete",
+    "setup_success": "All set! A new map will appear in {channel} {frequency} ({first}).\n\nUse `/guessmap newmap` any time to skip ahead.\nThe daily leaderboard is posted at {leaderboard_hour}:{leaderboard_minute} UTC.",
+    "setup_first_within_minute": "the first one appears within a minute",
+    "setup_current_until_next": "the current map stays until then",
+    "setup_every_day": "every day at {hour}",
+    "setup_every_hours": "every {hours} hours (counted from {hour})",
+    "setup_every_minutes": "every {minutes} minutes",
+    "daily_maps_disabled_title": "Daily maps disabled",
+    "daily_maps_disabled": "Daily maps have been turned off.",
+    "no_guess_command": "There isn't an active map in this channel right now.",
+    "restore_post_description": "A new map is ready!\n\nThe map stays hidden until you start. Press **{start_button}** to reveal it privately and start your timer, then answer with {guess_command}. Don't type your guess in chat.\n\nNext map <t:{next_reset}:R>."
+  },
+  "challenge": {
+    "difficulty_announcement_title": "🎯 Daily Challenge · {challenge_key}",
+    "difficulty_announcement": "**Choose your difficulty**\n\nPick a mode, then submit your guess with **/guesschallenge** and your map name.\n\n**Rules**\n- You get **one guess total**.\n- Before guessing, you can switch to an easier difficulty, but never a harder one.\n- Your mode is remembered, so you only need to specify it if you've started zoom-out.\n\n**Difficulties**\n- {easy_label}\n- {normal_label}\n- {hard_label}\n- {impossible_label}\n\n**Points for a correct answer**\n{rewards}",
+    "zoom_announcement_title": "🔎 Zoom-out Challenge · {challenge_key}",
+    "zoom_announcement": "The map starts heavily zoomed in and zooms out after each wrong guess. You get **{attempts} tries**.\n\nPress the button to start privately, then submit your guess with **/guesschallenge** and your map name. You only need the mode option if you have another challenge active.\n\n**Points**\nBase points by attempt: **{points}**\nSpeed bonus: up to **+{speed_bonus}**, dropping every {bonus_interval} seconds until it reaches zero after {bonus_cutoff} seconds.",
+    "difficulty_private_title": "🎯 Daily Challenge",
+    "difficulty_private_description": "Choose a difficulty below.\n\nYou can switch to an easier option before guessing, but never a harder one. You get **one guess total**.\n\n**Rewards**\n{rewards}",
+    "zoom_private_title": "🔎 Zoom-out Challenge",
+    "no_active_daily": "There isn't an active daily difficulty challenge right now.",
+    "no_active_challenge": "There isn't an active challenge of that type right now.",
+    "no_active_for_player": "There isn't an active challenge for you to answer right now.",
+    "multiple_selected": "You have more than one challenge selected. Use the optional **mode** option to say which one you're answering.",
+    "select_difficulty_first": "Choose a difficulty with one of the buttons on the Daily Difficulty Challenge post first.",
+    "start_zoom_first": "Press **{start_zoom_button}** first to reveal the map.",
+    "not_active_for_mode": "There's no active challenge for that mode, or it isn't your selected difficulty.",
+    "harder_selection": "You selected **{selected}**. You can switch to an easier difficulty, but never a harder one during this daily challenge.",
+    "already_attempted_selection": "You've already submitted your guess, so you can't change your difficulty today.",
+    "selected_different": "Your selected difficulty is **{selected}**. You can only switch to an easier option.",
+    "difficulty_already_guessed": "You've already used your **one guess** for this difficulty.",
+    "zoom_all_tries_used": "You've used all your tries on this zoom-out challenge.",
+    "challenge_timer_running": "Your challenge has already started. Submit your answer with **/guesschallenge**.",
+    "difficulty_start_description": "**{mode_label} challenge**\n\nYou have **one guess only**.\n\nSubmit your map name with **/guesschallenge**. Autocomplete suggestions appear as you type, so don't type your guess in chat.\n\nCorrect answer: **{points}** points",
+    "zoom_start_description": "**{mode_label} challenge**\n\nYou have **{attempts} tries**. Each wrong answer zooms the image out.\n\nSubmit your map name with **/guesschallenge**. Autocomplete suggestions appear as you type.\n\nPoints by attempt: **{points}**, plus the normal speed bonus",
+    "selection_changed_during_start": "Your selection changed while the image was loading. Please use the button for your current difficulty.",
+    "image_unavailable": "I couldn't display the challenge image. Please try again.",
+    "start_first": "Press the challenge's **Start** button first, then submit your guess with **/guesschallenge**.",
+    "select_first": "Select your challenge first.",
+    "invalid_mode": "Please select Easy, Normal, Hard, Impossible, or Zoom-out.",
+    "no_active_mode": "There isn't an active challenge of that type right now.",
+    "select_button_before_guess": "Choose a difficulty with its button on the daily challenge post before guessing.",
+    "resume_after_restart": "Press the challenge's **Start** button first to reveal the image.\n\nIf the bot restarted, press the same button again to resume your selected mode.",
+    "selected_now": "Your selection is now **{selected}**. Press that difficulty's Start button, then submit your guess again.",
+    "correct_title": "{map_name}",
+    "correct_result": "Correct! You solved the **{mode_label}** challenge.\n\nYou earned **{points}** points ({score_detail}).\nYour {mode} total is now **{total}** points.\nTime: **{elapsed:.1f}s**",
+    "incorrect_zoom_retry": "That guess was incorrect. You have **{attempts_left}** tries left.\n\nThe image has zoomed out to show more of the map. Submit another answer with **/guesschallenge**.",
+    "incorrect_difficulty": "Incorrect. That was your **one guess** for this difficulty, so you earned **0** points.",
+    "incorrect_zoom_final": "Incorrect. You used all {attempts} tries and earned **0** points.",
+    "fixed_reward_detail": "fixed difficulty reward: **{points}**",
+    "speed_reward_detail": "**{base_points}** base + **{bonus}** speed bonus",
+    "test_success": "A fresh test challenge has been posted.",
+    "test_failure": "I couldn't generate the test challenge.",
+    "test_title": "Challenge test",
+    "replaced_line": "\n*This challenge has been replaced.*",
+    "replaced_title": "Challenge ended",
+    "active_check_failed": "There isn't an active challenge of that type right now.",
+    "difficulty_legend": "{easy_label} · {normal_label} · {hard_label} · {impossible_label}",
+    "image_title": "{mode_label} challenge",
+    "empty_guess": "Type a map name first!",
+    "guess_too_long": "That's too long (max {max_length} characters).",
+    "no_active_title": "No active challenge"
+  },
+  "infinite": {
+    "button_skip": "Skip this map",
+    "button_next": "Next random map",
+    "title": "♾️ Infinite Map Challenge",
+    "description": "A random map with a random combination of filters. You get one guess.\n\nSubmit it with **/guessinfinite**, or press **{skip_button}** to reveal the answer without guessing. After either, the button becomes **{next_button}**.\n\nThis mode awards **no points** and has **no leaderboard**.",
+    "filters_field": "Filters applied",
+    "footer": "Unscored fun mode • No leaderboard or points",
+    "session_owner_error": "This Infinite session belongs to someone else.",
+    "session_title": "Infinite mode",
+    "expired_title": "Infinite session expired",
+    "expired_body": "This Infinite map is no longer active. Start a new session with **/guessmap infinite**.",
+    "load_failed_title": "Infinite mode unavailable",
+    "load_failed": "I couldn't load a map right now. Press **{next_button}** or try again.",
+    "generation_failed_title": "Infinite mode error",
+    "generation_failed": "I couldn't generate a random-filter map. Please try again.",
+    "start_first": "Start with **/guessmap infinite** to get a random map first.",
+    "skipped_title": "⏭️ Map skipped: {map_name}",
+    "skipped_description": "The map was **{map_name}**.\n\nNo points are awarded in Infinite mode. Press **{next_button}** when you're ready to continue.",
+    "already_complete_title": "Map already completed",
+    "already_complete": "You've already guessed this map. Press **{next_button}** to continue.",
+    "missing_guess_title": "Missing guess",
+    "missing_guess": "Enter a map name.",
+    "guess_too_long_title": "Guess too long",
+    "guess_too_long": "That's too long (max {max_length} characters).",
+    "correct_title": "✅ {map_name}",
+    "correct_description": "Correct! You identified the map.\n\nNo points are awarded in Infinite mode.",
+    "incorrect_title": "❌ Incorrect guess",
+    "incorrect_description": "Not quite. The map was **{map_name}**.\n\nNo points are awarded in Infinite mode. Try another random map!",
+    "autocomplete_no_session": "Start with /guessmap infinite first",
+    "autocomplete_finished": "Map completed - press {next_button}",
+    "no_map_session_error": "Start with **/guessmap infinite** to get a random map first.",
+    "effects": {
+      "zoom": "Zoomed in x {factor:g}",
+      "pixelated": "Pixelated ({width} px detail width)",
+      "blurred": "Blurred (level {level_index}, {strength:g})",
+      "inverted": "Colours inverted"
+    }
+  },
+  "autocomplete": {
+    "no_active_map": "No active map in this channel",
+    "already_solved": "You've already solved this map",
+    "all_tries_used": "You've used all your tries",
+    "start_first": "Press Start guessing first to reveal the map",
+    "valid_mode": "Select a valid challenge mode",
+    "no_active_mode": "No active challenge for this mode",
+    "choose_difficulty": "Choose a difficulty using its button first",
+    "selected_difficulty": "Selected: {mode_label}; use this or choose an easier option",
+    "already_guessed_one": "You've already used your one guess",
+    "zoom_tries_used": "You've used all your zoom-out tries",
+    "start_challenge_first": "Press the challenge Start button first"
+  },
+  "commands": {
+    "group_description": "Guess the map game",
+    "setup_description": "ADMIN: Set up scheduled daily maps in a channel",
+    "setup_channel_parameter": "Where the daily map is posted",
+    "disable_description": "ADMIN: Turn off scheduled daily maps",
+    "newmap_description": "ADMIN: Skip ahead and post a brand-new map now",
+    "play_description": "Privately reveal the current map and start your timer",
+    "challenge_description": "Privately open the current daily difficulty choices",
+    "infinite_description": "Start an unscored random-filter map challenge",
+    "testchallenge_description": "ADMIN: Generate a fresh challenge right now for testing",
+    "testchallenge_kind_parameter": "Which scheduled challenge to regenerate",
+    "testchallenge_difficulty_choice": "Daily difficulty",
+    "testchallenge_zoom_choice": "Zoom-out",
+    "leaderboard_description": "Show the top players or the full leaderboard",
+    "leaderboard_full_parameter": "Show every ranked player instead of only the top 10",
+    "challengeleaderboard_description": "Show the leaderboard for one challenge mode",
+    "challengeleaderboard_mode_parameter": "Which challenge leaderboard to show",
+    "challengeleaderboard_full_parameter": "Show every ranked player",
+    "reload_description": "ADMIN: Reload the map list and messages.json",
+    "guess_description": "Submit your guess after pressing Start guessing",
+    "guess_name_parameter": "Your guess for the map's name",
+    "guesschallenge_description": "Privately submit an answer for the challenge you selected",
+    "guesschallenge_mode_parameter": "Optional: only needed if you have more than one challenge selected",
+    "guessinfinite_description": "Guess the map in your unscored Infinite random-filter session",
+    "pass_description": "Skip a guess to see a less blurry image (uses up a try)"
+  },
+  "admin": {
+    "permission_body": "ADMIN: You need the Manage Server permission to use this command."
+  },
+  "common_responses": {
+    "reload_failed_title": "Reload failed",
+    "reload_failed": "Reload failed (nothing changed): {error}",
+    "reload_success_title": "Maps reloaded",
+    "reload_success": "Reloaded {map_count} maps.",
+    "leaderboard_permission": "Only the person who opened this leaderboard can change its page."
+  }
 }

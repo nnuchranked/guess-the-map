@@ -12,41 +12,232 @@ def init():
     os.makedirs(os.path.dirname(config.DB_FILE) or ".", exist_ok=True)
     _conn = sqlite3.connect(config.DB_FILE)
     _conn.execute("PRAGMA journal_mode=WAL")
+    _conn.execute("PRAGMA foreign_keys=ON")
     _conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS scores(
             guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
-            points INTEGER NOT NULL DEFAULT 0, correct INTEGER NOT NULL DEFAULT 0,
+            points REAL NOT NULL DEFAULT 0, correct INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY(guild_id, user_id));
-        -- interval_minutes is no longer used (maps are daily) but the column is kept
-        -- so an existing scores.db keeps working.
+
         CREATE TABLE IF NOT EXISTS settings(
             guild_id INTEGER PRIMARY KEY, channel_id INTEGER NOT NULL,
             interval_minutes INTEGER NOT NULL, next_round_at INTEGER NOT NULL);
-        -- the map currently being played in each game channel (survives restarts)
+
         CREATE TABLE IF NOT EXISTS rounds(
             channel_id INTEGER PRIMARY KEY, guild_id INTEGER NOT NULL,
             map_id TEXT NOT NULL, message_id INTEGER, started_at INTEGER NOT NULL);
-        -- each player's progress on the current map
+
         CREATE TABLE IF NOT EXISTS attempts(
             channel_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
             used INTEGER NOT NULL DEFAULT 0, solved INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY(channel_id, user_id));
-        -- recently played maps, so they don't repeat soon (also across restarts)
+
         CREATE TABLE IF NOT EXISTS recent(
             guild_id INTEGER NOT NULL, map_id TEXT NOT NULL, played_at INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS recent_idx ON recent(guild_id, played_at);
+
+        CREATE TABLE IF NOT EXISTS player_map_stats(
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            channel_id INTEGER NOT NULL,
+            round_started_at INTEGER NOT NULL,
+            map_id TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            solved INTEGER NOT NULL DEFAULT 0,
+            solved_guess_count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(guild_id, user_id, channel_id, round_started_at));
+        CREATE INDEX IF NOT EXISTS player_map_stats_rank_idx
+            ON player_map_stats(guild_id, user_id);
+
+        -- Separate cumulative scoreboards for each challenge mode.
+        CREATE TABLE IF NOT EXISTS mode_scores(
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            mode TEXT NOT NULL,
+            points REAL NOT NULL DEFAULT 0,
+            correct INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(guild_id, user_id, mode));
+
+        -- A player's progress on each scheduled challenge and mode.
+        CREATE TABLE IF NOT EXISTS mode_attempts(
+            guild_id INTEGER NOT NULL,
+            challenge_key TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            used INTEGER NOT NULL DEFAULT 0,
+            solved INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(guild_id, challenge_key, mode, user_id));
+
+        -- One difficulty selection per player for each daily difficulty challenge.
+        -- Selecting Easy, Normal, Hard or Impossible locks the other three.
+        CREATE TABLE IF NOT EXISTS difficulty_selections(
+            guild_id INTEGER NOT NULL,
+            challenge_key TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            mode TEXT NOT NULL,
+            selected_at INTEGER NOT NULL,
+            PRIMARY KEY(guild_id, challenge_key, user_id));
+
+        -- Stats are one row per player per challenge and mode.
+        CREATE TABLE IF NOT EXISTS mode_map_stats(
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            mode TEXT NOT NULL,
+            challenge_key TEXT NOT NULL,
+            map_id TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            solved INTEGER NOT NULL DEFAULT 0,
+            solved_guess_count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(guild_id, user_id, mode, challenge_key));
+        CREATE INDEX IF NOT EXISTS mode_map_stats_rank_idx
+            ON mode_map_stats(guild_id, mode, user_id);
+
+        -- One active scheduled challenge per guild and challenge family.
+        CREATE TABLE IF NOT EXISTS scheduled_challenges(
+            guild_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            challenge_key TEXT NOT NULL,
+            channel_id INTEGER NOT NULL,
+            map_id TEXT NOT NULL,
+            message_id INTEGER,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY(guild_id, kind));
+
+        CREATE TABLE IF NOT EXISTS daily_leaderboard_posts(
+            guild_id INTEGER NOT NULL,
+            day_key TEXT NOT NULL,
+            posted_at INTEGER NOT NULL,
+            PRIMARY KEY(guild_id, day_key));
         """
+    )
+    # Older releases created these two tables without their intended keys.
+    # CREATE TABLE IF NOT EXISTS does not repair an existing table, so rebuild
+    # them before any ON CONFLICT(channel_id...) statements can run.
+    _ensure_rounds_primary_key()
+    _ensure_attempts_primary_key()
+
+    # Upgrade databases created by the previous leaderboard update.
+    columns = {row[1] for row in _conn.execute("PRAGMA table_info(player_map_stats)")}
+    if "solved_guess_count" not in columns:
+        _conn.execute(
+            "ALTER TABLE player_map_stats ADD COLUMN solved_guess_count INTEGER NOT NULL DEFAULT 0"
+        )
+    # Earlier versions already stored the number of attempts on solved maps.
+    # Backfill that history so the average-attempts statistic is not reset.
+    _conn.execute(
+        "UPDATE player_map_stats SET solved_guess_count=attempts "
+        "WHERE solved=1 AND solved_guess_count=0 AND attempts>0"
+    )
+
+    # Preserve an existing player's difficulty choice when upgrading from the
+    # previous multi-attempt implementation. If they completed more than one
+    # difficulty before this change, the first recorded mode is retained.
+    _conn.execute(
+        "INSERT OR IGNORE INTO difficulty_selections "
+        "(guild_id,challenge_key,user_id,mode,selected_at) "
+        "SELECT guild_id,challenge_key,user_id,mode,0 FROM mode_attempts "
+        "WHERE mode IN ('easy','normal','hard','impossible') AND used>0 "
+        "ORDER BY rowid ASC"
     )
     _conn.commit()
 
 
-# ---- scores -------------------------------------------------------------
+def _primary_key_columns(table):
+    rows = _conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return [row[1] for row in sorted((r for r in rows if r[5]), key=lambda r: r[5])]
+
+
+def _ensure_rounds_primary_key():
+    """Repair legacy rounds tables, preserving the newest row per channel."""
+    if _primary_key_columns("rounds") == ["channel_id"]:
+        return
+
+    columns = {row[1] for row in _conn.execute("PRAGMA table_info(rounds)")}
+    required = {"channel_id", "guild_id", "map_id"}
+    if not required.issubset(columns):
+        raise sqlite3.DatabaseError(
+            "The rounds table has an unsupported schema; back up scores.db before upgrading."
+        )
+
+    started_expr = "started_at" if "started_at" in columns else "0"
+    message_expr = "message_id" if "message_id" in columns else "NULL"
+    rows = _conn.execute(
+        f"SELECT rowid, channel_id, guild_id, map_id, {message_expr}, {started_expr} "
+        "FROM rounds ORDER BY rowid DESC"
+    ).fetchall()
+
+    # Keep the latest round for a channel (started_at is in milliseconds in
+    # current versions; rowid breaks ties and supports older second timestamps).
+    latest = {}
+    for rowid, channel_id, guild_id, map_id, message_id, started_at in rows:
+        current = latest.get(channel_id)
+        candidate_key = (int(started_at or 0), int(rowid))
+        current_key = (int(current[5] or 0), int(current[0])) if current else None
+        if current is None or candidate_key > current_key:
+            latest[channel_id] = (rowid, channel_id, guild_id, map_id, message_id, started_at or 0)
+
+    with _conn:
+        _conn.execute("DROP TABLE IF EXISTS rounds__key_migration")
+        _conn.execute(
+            "CREATE TABLE rounds__key_migration("
+            "channel_id INTEGER PRIMARY KEY, guild_id INTEGER NOT NULL, "
+            "map_id TEXT NOT NULL, message_id INTEGER, started_at INTEGER NOT NULL)"
+        )
+        _conn.executemany(
+            "INSERT INTO rounds__key_migration "
+            "(channel_id,guild_id,map_id,message_id,started_at) VALUES(?,?,?,?,?)",
+            [row[1:] for row in latest.values()],
+        )
+        _conn.execute("DROP TABLE rounds")
+        _conn.execute("ALTER TABLE rounds__key_migration RENAME TO rounds")
+
+
+def _ensure_attempts_primary_key():
+    """Repair legacy attempts tables, keeping the most recent row per player/map."""
+    if _primary_key_columns("attempts") == ["channel_id", "user_id"]:
+        return
+
+    columns = {row[1] for row in _conn.execute("PRAGMA table_info(attempts)")}
+    required = {"channel_id", "user_id"}
+    if not required.issubset(columns):
+        raise sqlite3.DatabaseError(
+            "The attempts table has an unsupported schema; back up scores.db before upgrading."
+        )
+    used_expr = "used" if "used" in columns else "0"
+    solved_expr = "solved" if "solved" in columns else "0"
+    rows = _conn.execute(
+        f"SELECT rowid, channel_id, user_id, {used_expr}, {solved_expr} "
+        "FROM attempts ORDER BY rowid DESC"
+    ).fetchall()
+
+    latest = {}
+    for _rowid, channel_id, user_id, used, solved in rows:
+        latest.setdefault((channel_id, user_id), (channel_id, user_id, used or 0, solved or 0))
+
+    with _conn:
+        _conn.execute("DROP TABLE IF EXISTS attempts__key_migration")
+        _conn.execute(
+            "CREATE TABLE attempts__key_migration("
+            "channel_id INTEGER NOT NULL, user_id INTEGER NOT NULL, "
+            "used INTEGER NOT NULL DEFAULT 0, solved INTEGER NOT NULL DEFAULT 0, "
+            "PRIMARY KEY(channel_id,user_id))"
+        )
+        _conn.executemany(
+            "INSERT INTO attempts__key_migration(channel_id,user_id,used,solved) VALUES(?,?,?,?)",
+            list(latest.values()),
+        )
+        _conn.execute("DROP TABLE attempts")
+        _conn.execute("ALTER TABLE attempts__key_migration RENAME TO attempts")
+
+
+# ---- main daily scores --------------------------------------------------
 def add_points(guild_id, user_id, points):
     with _conn:
         _conn.execute(
             "INSERT INTO scores(guild_id,user_id,points,correct) VALUES(?,?,?,1) "
-            "ON CONFLICT(guild_id,user_id) DO UPDATE SET points=points+excluded.points, correct=correct+1",
+            "ON CONFLICT(guild_id,user_id) DO UPDATE SET "
+            "points=points+excluded.points, correct=correct+1",
             (guild_id, user_id, points),
         )
     return _conn.execute(
@@ -54,12 +245,323 @@ def add_points(guild_id, user_id, points):
     ).fetchone()[0]
 
 
+def _ranked_rows(score_table, guild_id, limit=None, mode=None):
+    """Shared leaderboard query. Table names are internal constants, never user input."""
+    if score_table == "scores":
+        where = "s.guild_id=?"
+        params = [guild_id]
+        stats_where = "guild_id=?"
+        stats_params = [guild_id]
+        stats_table = "player_map_stats"
+        join_mode = ""
+    else:
+        where = "s.guild_id=? AND s.mode=?"
+        params = [guild_id, mode]
+        stats_where = "guild_id=? AND mode=?"
+        stats_params = [guild_id, mode]
+        stats_table = "mode_map_stats"
+
+    stats_mode_column = ", mode" if score_table == "mode_scores" else ""
+    stats_group = ", mode" if score_table == "mode_scores" else ""
+    stats_join = " AND p.mode=s.mode" if score_table == "mode_scores" else ""
+    sql = (
+        "SELECT s.user_id, s.points, s.correct, "
+        "COALESCE(p.played,0), COALESCE(p.solved,0), p.avg_guesses "
+        f"FROM {score_table} AS s "
+        "LEFT JOIN ("
+        f" SELECT user_id{stats_mode_column}, COUNT(*) AS played, SUM(solved) AS solved, "
+        f" AVG(CASE WHEN solved=1 AND solved_guess_count>0 THEN solved_guess_count END) AS avg_guesses "
+        f" FROM {stats_table} WHERE {stats_where} GROUP BY user_id{stats_group}"
+        ") AS p ON p.user_id=s.user_id" + stats_join +
+        f" WHERE {where} ORDER BY s.points DESC, s.correct DESC, s.user_id ASC"
+    )
+    all_params = stats_params + params
+    if limit is not None:
+        sql += " LIMIT ?"
+        all_params.append(max(0, int(limit)))
+    return _conn.execute(sql, all_params).fetchall()
+
+
 def top(guild_id, limit=10):
+    return _ranked_rows("scores", guild_id, limit)
+
+
+def update_map_result(guild_id, user_id, channel_id, round_started_at, map_id, attempts, solved):
+    with _conn:
+        _conn.execute(
+            "INSERT INTO player_map_stats "
+            "(guild_id,user_id,channel_id,round_started_at,map_id,attempts,solved,solved_guess_count) "
+            "VALUES(?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(guild_id,user_id,channel_id,round_started_at) DO UPDATE SET "
+            "attempts=MAX(player_map_stats.attempts,excluded.attempts), "
+            "solved=MAX(player_map_stats.solved,excluded.solved), "
+            "solved_guess_count=CASE WHEN excluded.solved=1 THEN "
+            "MIN(CASE WHEN player_map_stats.solved_guess_count=0 THEN excluded.solved_guess_count "
+            "ELSE player_map_stats.solved_guess_count END, excluded.solved_guess_count) "
+            "ELSE player_map_stats.solved_guess_count END",
+            (guild_id, user_id, channel_id, round_started_at, map_id, attempts,
+             int(solved), attempts if solved else 0),
+        )
+
+
+# ---- challenge mode scores ---------------------------------------------
+def add_mode_points(guild_id, user_id, mode, points):
+    with _conn:
+        _conn.execute(
+            "INSERT INTO mode_scores(guild_id,user_id,mode,points,correct) VALUES(?,?,?,?,1) "
+            "ON CONFLICT(guild_id,user_id,mode) DO UPDATE SET "
+            "points=points+excluded.points, correct=correct+1",
+            (guild_id, user_id, mode, points),
+        )
     return _conn.execute(
-        "SELECT user_id, points, correct FROM scores WHERE guild_id=? "
-        "ORDER BY points DESC, correct DESC LIMIT ?",
-        (guild_id, limit),
+        "SELECT points FROM mode_scores WHERE guild_id=? AND user_id=? AND mode=?",
+        (guild_id, user_id, mode),
+    ).fetchone()[0]
+
+
+def top_mode(guild_id, mode, limit=10):
+    return _ranked_rows("mode_scores", guild_id, limit, mode=mode)
+
+
+def get_mode_attempt(guild_id, challenge_key, mode, user_id):
+    row = _conn.execute(
+        "SELECT used, solved FROM mode_attempts "
+        "WHERE guild_id=? AND challenge_key=? AND mode=? AND user_id=?",
+        (guild_id, challenge_key, mode, user_id),
+    ).fetchone()
+    return row if row else (0, 0)
+
+
+def set_mode_attempt(guild_id, challenge_key, mode, user_id, used, solved):
+    with _conn:
+        _conn.execute(
+            "INSERT INTO mode_attempts(guild_id,challenge_key,mode,user_id,used,solved) "
+            "VALUES(?,?,?,?,?,?) ON CONFLICT(guild_id,challenge_key,mode,user_id) "
+            "DO UPDATE SET used=excluded.used, solved=excluded.solved",
+            (guild_id, challenge_key, mode, user_id, used, int(solved)),
+        )
+
+
+def record_difficulty_attempt(guild_id, challenge_key, mode, user_id, solved):
+    """Atomically record the one allowed daily-difficulty guess for the selected mode.
+
+    Returns False if the player downgraded concurrently or already spent the guess.
+    """
+    if mode not in ("easy", "normal", "hard", "impossible"):
+        raise ValueError(f"Not a difficulty mode: {mode}")
+    with _conn:
+        selected = _conn.execute(
+            "SELECT mode FROM difficulty_selections "
+            "WHERE guild_id=? AND challenge_key=? AND user_id=?",
+            (guild_id, challenge_key, user_id),
+        ).fetchone()
+        if not selected or selected[0] != mode:
+            return False
+        previous_attempt = _conn.execute(
+            "SELECT 1 FROM mode_attempts WHERE guild_id=? AND challenge_key=? "
+            "AND user_id=? AND mode IN ('easy','normal','hard','impossible') "
+            "AND (used>0 OR solved=1) LIMIT 1",
+            (guild_id, challenge_key, user_id),
+        ).fetchone()
+        if previous_attempt:
+            return False
+        _conn.execute(
+            "INSERT INTO mode_attempts(guild_id,challenge_key,mode,user_id,used,solved) "
+            "VALUES(?,?,?,?,1,?) ON CONFLICT(guild_id,challenge_key,mode,user_id) "
+            "DO UPDATE SET used=1, solved=excluded.solved",
+            (guild_id, challenge_key, mode, user_id, int(solved)),
+        )
+    return True
+
+
+def get_difficulty_selection(guild_id, challenge_key, user_id):
+    row = _conn.execute(
+        "SELECT mode FROM difficulty_selections "
+        "WHERE guild_id=? AND challenge_key=? AND user_id=?",
+        (guild_id, challenge_key, user_id),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def claim_difficulty_selection(guild_id, challenge_key, user_id, mode):
+    """Atomically claim a daily difficulty choice. Return (chosen_mode, inserted)."""
+    if mode not in ("easy", "normal", "hard", "impossible"):
+        raise ValueError(f"Not a difficulty mode: {mode}")
+    with _conn:
+        cursor = _conn.execute(
+            "INSERT OR IGNORE INTO difficulty_selections "
+            "(guild_id,challenge_key,user_id,mode,selected_at) VALUES(?,?,?,?,?)",
+            (guild_id, challenge_key, user_id, mode, int(time.time())),
+        )
+        row = _conn.execute(
+            "SELECT mode FROM difficulty_selections "
+            "WHERE guild_id=? AND challenge_key=? AND user_id=?",
+            (guild_id, challenge_key, user_id),
+        ).fetchone()
+    return (row[0] if row else None), bool(cursor.rowcount)
+
+
+def select_or_downgrade_difficulty(guild_id, challenge_key, user_id, mode):
+    """Select a difficulty, or move to an easier one before the player has guessed.
+
+    Returns (previous_mode, selected_mode, changed, status), where status is one of
+    'selected', 'same', 'downgraded', 'harder', or 'already_attempted'.
+    The transaction makes simultaneous button clicks safe.
+    """
+    order = {"easy": 0, "normal": 1, "hard": 2, "impossible": 3}
+    if mode not in order:
+        raise ValueError(f"Not a difficulty mode: {mode}")
+
+    with _conn:
+        row = _conn.execute(
+            "SELECT mode FROM difficulty_selections "
+            "WHERE guild_id=? AND challenge_key=? AND user_id=?",
+            (guild_id, challenge_key, user_id),
+        ).fetchone()
+
+        if row is None:
+            _conn.execute(
+                "INSERT INTO difficulty_selections "
+                "(guild_id,challenge_key,user_id,mode,selected_at) VALUES(?,?,?,?,?)",
+                (guild_id, challenge_key, user_id, mode, int(time.time())),
+            )
+            return None, mode, True, "selected"
+
+        previous = row[0]
+        if previous == mode:
+            return previous, previous, False, "same"
+
+        # Higher index means harder. Upgrades are never allowed.
+        if previous not in order or order[mode] > order[previous]:
+            return previous, previous, False, "harder"
+
+        attempt = _conn.execute(
+            "SELECT 1 FROM mode_attempts "
+            "WHERE guild_id=? AND challenge_key=? AND user_id=? "
+            "AND mode IN ('easy','normal','hard','impossible') "
+            "AND (used>0 OR solved=1) LIMIT 1",
+            (guild_id, challenge_key, user_id),
+        ).fetchone()
+        if attempt:
+            return previous, previous, False, "already_attempted"
+
+        _conn.execute(
+            "UPDATE difficulty_selections SET mode=?, selected_at=? "
+            "WHERE guild_id=? AND challenge_key=? AND user_id=?",
+            (mode, int(time.time()), guild_id, challenge_key, user_id),
+        )
+        return previous, mode, True, "downgraded"
+
+
+def restore_difficulty_selection(guild_id, challenge_key, user_id, expected_mode, previous_mode):
+    """Roll back a fresh selection/downgrade if its challenge image could not be shown."""
+    with _conn:
+        if previous_mode is None:
+            _conn.execute(
+                "DELETE FROM difficulty_selections WHERE guild_id=? AND challenge_key=? "
+                "AND user_id=? AND mode=? AND NOT EXISTS ("
+                "SELECT 1 FROM mode_attempts a WHERE a.guild_id=? AND a.challenge_key=? "
+                "AND a.user_id=? AND a.used>0)",
+                (guild_id, challenge_key, user_id, expected_mode,
+                 guild_id, challenge_key, user_id),
+            )
+        else:
+            _conn.execute(
+                "UPDATE difficulty_selections SET mode=?, selected_at=? "
+                "WHERE guild_id=? AND challenge_key=? AND user_id=? AND mode=? "
+                "AND NOT EXISTS (SELECT 1 FROM mode_attempts a WHERE a.guild_id=? "
+                "AND a.challenge_key=? AND a.user_id=? AND a.used>0)",
+                (previous_mode, int(time.time()), guild_id, challenge_key, user_id,
+                 expected_mode, guild_id, challenge_key, user_id),
+            )
+
+
+def release_difficulty_selection(guild_id, challenge_key, user_id, mode):
+    """Undo a fresh selection only if no guess has been recorded for it."""
+    with _conn:
+        _conn.execute(
+            "DELETE FROM difficulty_selections "
+            "WHERE guild_id=? AND challenge_key=? AND user_id=? AND mode=? "
+            "AND NOT EXISTS (SELECT 1 FROM mode_attempts a "
+            "WHERE a.guild_id=? AND a.challenge_key=? AND a.mode=? AND a.user_id=? AND a.used>0)",
+            (guild_id, challenge_key, user_id, mode,
+             guild_id, challenge_key, mode, user_id),
+        )
+
+
+def update_mode_map_result(guild_id, user_id, mode, challenge_key, map_id, attempts, solved):
+    with _conn:
+        _conn.execute(
+            "INSERT INTO mode_map_stats "
+            "(guild_id,user_id,mode,challenge_key,map_id,attempts,solved,solved_guess_count) "
+            "VALUES(?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(guild_id,user_id,mode,challenge_key) DO UPDATE SET "
+            "attempts=MAX(mode_map_stats.attempts,excluded.attempts), "
+            "solved=MAX(mode_map_stats.solved,excluded.solved), "
+            "solved_guess_count=CASE WHEN excluded.solved=1 THEN excluded.solved_guess_count "
+            "ELSE mode_map_stats.solved_guess_count END",
+            (guild_id, user_id, mode, challenge_key, map_id, attempts,
+             int(solved), attempts if solved else 0),
+        )
+
+
+# ---- scheduled difficulty / zoom-out challenges -----------------------
+def save_scheduled_challenge(guild_id, kind, challenge_key, channel_id, map_id, message_id=None):
+    with _conn:
+        _conn.execute(
+            "INSERT INTO scheduled_challenges "
+            "(guild_id,kind,challenge_key,channel_id,map_id,message_id,created_at) "
+            "VALUES(?,?,?,?,?,?,?) ON CONFLICT(guild_id,kind) DO UPDATE SET "
+            "challenge_key=excluded.challenge_key, channel_id=excluded.channel_id, "
+            "map_id=excluded.map_id, message_id=excluded.message_id, created_at=excluded.created_at",
+            (guild_id, kind, challenge_key, channel_id, map_id, message_id, int(time.time())),
+        )
+
+
+def set_scheduled_challenge_message(guild_id, kind, message_id):
+    with _conn:
+        _conn.execute(
+            "UPDATE scheduled_challenges SET message_id=? WHERE guild_id=? AND kind=?",
+            (message_id, guild_id, kind),
+        )
+
+
+def get_scheduled_challenge(guild_id, kind):
+    return _conn.execute(
+        "SELECT guild_id,kind,challenge_key,channel_id,map_id,message_id,created_at "
+        "FROM scheduled_challenges WHERE guild_id=? AND kind=?",
+        (guild_id, kind),
+    ).fetchone()
+
+
+def all_scheduled_challenges():
+    return _conn.execute(
+        "SELECT guild_id,kind,challenge_key,channel_id,map_id,message_id,created_at "
+        "FROM scheduled_challenges"
     ).fetchall()
+
+
+def delete_scheduled_challenge(guild_id, kind):
+    with _conn:
+        _conn.execute(
+            "DELETE FROM scheduled_challenges WHERE guild_id=? AND kind=?", (guild_id, kind)
+        )
+
+
+# ---- daily leaderboard post tracking ----------------------------------
+def has_daily_leaderboard_post(guild_id, day_key):
+    return _conn.execute(
+        "SELECT 1 FROM daily_leaderboard_posts WHERE guild_id=? AND day_key=?",
+        (guild_id, day_key),
+    ).fetchone() is not None
+
+
+def mark_daily_leaderboard_post(guild_id, day_key):
+    with _conn:
+        _conn.execute(
+            "INSERT OR IGNORE INTO daily_leaderboard_posts(guild_id,day_key,posted_at) VALUES(?,?,?)",
+            (guild_id, day_key, int(time.time())),
+        )
 
 
 # ---- schedule -----------------------------------------------------------
@@ -79,7 +581,7 @@ def disable(guild_id):
 
 
 def all_settings():
-    return _conn.execute("SELECT guild_id, channel_id, next_round_at FROM settings").fetchall()
+    return _conn.execute("SELECT guild_id,channel_id,next_round_at FROM settings").fetchall()
 
 
 def schedule_next(guild_id, next_round_at):
@@ -87,9 +589,8 @@ def schedule_next(guild_id, next_round_at):
         _conn.execute("UPDATE settings SET next_round_at=? WHERE guild_id=?", (next_round_at, guild_id))
 
 
-# ---- the current map in a channel ----------------------------------------
+# ---- current daily map --------------------------------------------------
 def save_round(channel_id, guild_id, map_id, message_id, started_at):
-    """Store a new current map for the channel and wipe everyone's attempts."""
     with _conn:
         _conn.execute(
             "INSERT INTO rounds(channel_id,guild_id,map_id,message_id,started_at) VALUES(?,?,?,?,?) "
@@ -107,12 +608,14 @@ def delete_round(channel_id):
 
 
 def load_rounds():
-    return _conn.execute("SELECT channel_id, guild_id, map_id, message_id FROM rounds").fetchall()
+    return _conn.execute(
+        "SELECT channel_id,guild_id,map_id,message_id,started_at FROM rounds"
+    ).fetchall()
 
 
 def load_attempts(channel_id):
     return _conn.execute(
-        "SELECT user_id, used, solved FROM attempts WHERE channel_id=?", (channel_id,)
+        "SELECT user_id,used,solved FROM attempts WHERE channel_id=?", (channel_id,)
     ).fetchall()
 
 
@@ -120,12 +623,12 @@ def set_attempt(channel_id, user_id, used, solved):
     with _conn:
         _conn.execute(
             "INSERT INTO attempts(channel_id,user_id,used,solved) VALUES(?,?,?,?) "
-            "ON CONFLICT(channel_id,user_id) DO UPDATE SET used=excluded.used, solved=excluded.solved",
+            "ON CONFLICT(channel_id,user_id) DO UPDATE SET used=excluded.used,solved=excluded.solved",
             (channel_id, user_id, used, int(solved)),
         )
 
 
-# ---- recently played maps -------------------------------------------------
+# ---- recently played maps ----------------------------------------------
 def add_recent(guild_id, map_id):
     with _conn:
         _conn.execute(
@@ -136,7 +639,7 @@ def add_recent(guild_id, map_id):
 
 def recent_ids(guild_id, limit):
     rows = _conn.execute(
-        "SELECT map_id FROM recent WHERE guild_id=? ORDER BY played_at DESC, rowid DESC LIMIT ?",
+        "SELECT map_id FROM recent WHERE guild_id=? ORDER BY played_at DESC,rowid DESC LIMIT ?",
         (guild_id, limit),
     ).fetchall()
-    return [r[0] for r in rows]
+    return [row[0] for row in rows]
