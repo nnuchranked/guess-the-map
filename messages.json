@@ -61,7 +61,8 @@
     "page_footer": "Page {page}/{pages} • {total} players",
     "all_footer": "All {total} players",
     "top_footer": "Top 10 • Solved/played is the success rate • Average attempts only counts solved maps",
-    "daily_title": "🏆 Guess the Map Leaderboard"
+    "daily_title": "🏆 Guess the Map Leaderboard",
+    "challenge_all_title": "🏆 Challenge Leaderboard"
   },
   "main": {
     "round_post_title": "🗺️ Guess the map!",
@@ -77,7 +78,7 @@
     "no_active_map": "There's no active map in this channel right now.",
     "already_solved": "You've already solved this map!",
     "all_tries_used": "You've used all your tries on this map.",
-    "timer_running": "Your timer is already running. Submit your answer with {guess_command}.",
+    "timer_running": "Here's your current map again. Your timer has not restarted. Submit your answer with {guess_command}.",
     "start_first": "Press **{start_button}** on the map post first (or use `/guessmap play`).",
     "already_solved_next": "You've already solved this one! The next map appears <t:{next_reset}:R>.",
     "all_tries_next": "You've used all your tries on this map. The next one appears <t:{next_reset}:R>.",
@@ -88,7 +89,8 @@
       "🙈 Oof, close, but not that one! Less blur for you, {user}. {attempts_left} left!",
       "🤔 Hmm, nope! Let me wipe the lens a bit... {attempts_left} left!",
       "🎈 Nice try, {user}! Squint at this one. {attempts_left} left!",
-      "🧐 Not that one! The picture's getting sharper... {attempts_left} left!"
+      "🧐 Not that one! The picture's getting sharper... {attempts_left} left!",
+      "_'🤔 close but no cigar'_ - Oooooooooooooooooooooopie.  {attempts_left} left!"
     ],
     "wrong_guess_retry": "\n\nUse {guess_command} to try again. The timer for your next attempt starts with this image.",
     "last_try_cannot_pass": "That's your last try, so you can't pass. Take a guess!",
@@ -158,7 +160,9 @@
     "daily_recap": "**Daily recap**\n\nParticipants: **{participants}**\nSolved: **{solved}** · Unsolved: **{unsolved}**\n\nSolved on attempt 1: **{first_try}** · Attempt 2: **{second_try}** · Attempt 3: **{third_try}**\nAverage solve time: **{average_solve_time}**",
     "daily_recap_empty": "No guesses were submitted for this map.",
     "fastest_solver_field": "⚡ Fastest solver",
-    "fastest_solver_value": "{user} solved it in **{solve_time}** after revealing the map."
+    "fastest_solver_value": "{user} solved it in **{solve_time}** after revealing the map.",
+    "map_loading": "Your current map is still loading. Please try again in a moment.",
+    "map_unavailable": "I couldn't display your current map. Please try again."
   },
   "challenge": {
     "difficulty_announcement_title": "🎯 Daily Difficulty Challenge · {challenge_key}",
@@ -180,7 +184,7 @@
     "selected_different": "Your selected difficulty is **{selected}**. You can only switch to an easier option.",
     "difficulty_already_guessed": "You've already used your **one guess** for this difficulty.",
     "zoom_all_tries_used": "You've used all your tries on this zoom-out challenge.",
-    "challenge_timer_running": "Your challenge has already started. Submit your answer with **/guesschallenge**.",
+    "challenge_timer_running": "Here's your current challenge image again. Your speed-bonus timer has not restarted.",
     "difficulty_start_description": "**{mode_label} challenge**\n\nYou have **one guess only**.\n\nSubmit your map name with **/guesschallenge**. Autocomplete suggestions appear as you type, so don't type your guess in chat.\n\nCorrect answer: **{points}** points",
     "zoom_start_description": "**{mode_label} challenge**\n\nYou have **{attempts} tries**. Each wrong answer zooms the image out.\n\nSubmit your map name with **/guesschallenge**. Autocomplete suggestions appear as you type.\n\nPoints by attempt: **{points}**, plus the normal speed bonus",
     "selection_changed_during_start": "Your selection changed while the image was loading. Please use the button for your current difficulty.",
@@ -195,8 +199,8 @@
     "correct_title": "{map_name}",
     "correct_result": "Correct! You solved the **{mode_label}** challenge.\n\nYou earned **{points}** points ({score_detail}).\nYour {mode} total is now **{total}** points.\nTime: **{elapsed:.1f}s**",
     "incorrect_zoom_retry": "That guess was incorrect. You have **{attempts_left}** tries left.\n\nThe image has zoomed out to show more of the map. Submit another answer with **/guesschallenge**.",
-    "incorrect_difficulty": "Incorrect. That was your **one guess** for this difficulty, so you earned **0** points.",
-    "incorrect_zoom_final": "Incorrect. You used all {attempts} tries and earned **0** points.",
+    "incorrect_difficulty": "Incorrect. Try again next time! (Ivory is proud of you anyways)",
+    "incorrect_zoom_final": "Incorrect. You used all {attempts} tries and earned **0** points. Better luck next time!",
     "fixed_reward_detail": "fixed difficulty reward: **{points}**",
     "speed_reward_detail": "**{base_points}** base + **{bonus}** speed bonus",
     "test_success": "A fresh test challenge has been posted.",
@@ -209,7 +213,12 @@
     "image_title": "{mode_label} challenge",
     "empty_guess": "Type a map name first!",
     "guess_too_long": "That's too long (max {max_length} characters).",
-    "no_active_title": "No active challenge"
+    "no_active_title": "No active challenge",
+    "none_started": "You have not started an active challenge yet. Start one using its button on the challenge post.",
+    "choose_started_mode": "You have more than one active challenge. Use **/guessmap mychallenge** and its optional mode setting to choose which image to reopen.",
+    "current_attempt_line": "\n**Current attempt:** {attempt}/{attempts} · **Tries remaining:** {attempts_left}.",
+    "reopen_note": "\n\nThis is your current attempt. Reopening the image does not reset your speed-bonus timer. Submit with **/guesschallenge**.",
+    "challenge_loading": "Your challenge image is still loading. Please try again in a moment."
   },
   "infinite": {
     "button_skip": "Skip this map",
@@ -255,7 +264,9 @@
     "leaderboard_row": "{rank_label} <@{user_id}> — **{best}** best · {current} current",
     "leaderboard_top_footer": "Top 10 • Ranked by longest consecutive correct guesses",
     "leaderboard_page_footer": "Page {page}/{pages} • {total} players",
-    "leaderboard_all_footer": "All {total} players"
+    "leaderboard_all_footer": "All {total} players",
+    "reopen_note": "\n\nRun **/guessmap infinite** again to reopen this same map and filter combination.",
+    "replaced_body": "This Infinite message has been replaced by a newer copy. Use the most recent message to continue."
   },
   "autocomplete": {
     "no_active_map": "No active map in this channel",
@@ -276,17 +287,16 @@
     "setup_channel_parameter": "Where the daily map is posted",
     "disable_description": "ADMIN: Turn off scheduled daily maps",
     "newmap_description": "ADMIN: Skip ahead and post a brand-new map now",
-    "play_description": "Privately reveal the current map and start your timer",
-    "challenge_description": "Privately open the current daily difficulty choices",
-    "infinite_description": "Start Infinite mode: correct guesses build a streak and a personal best",
+    "play_description": "Show your current daily map; starts your timer only the first time",
+    "challenge_description": "Open the daily challenge or reopen the challenge map you already started",
+    "infinite_description": "Start Infinite mode or reopen your current random map without changing it",
     "testchallenge_description": "ADMIN: Generate a fresh challenge right now for testing",
     "testchallenge_kind_parameter": "Which scheduled challenge to regenerate",
     "testchallenge_difficulty_choice": "Daily difficulty",
     "testchallenge_zoom_choice": "Zoom-out",
     "leaderboard_description": "Show the top players or the full leaderboard",
     "leaderboard_full_parameter": "Show every ranked player instead of only the top 10",
-    "challengeleaderboard_description": "Show the leaderboard for one challenge mode",
-    "challengeleaderboard_mode_parameter": "Which challenge leaderboard to show",
+    "challengeleaderboard_description": "Show the combined leaderboard across all challenge modes",
     "challengeleaderboard_full_parameter": "Show every ranked player",
     "reload_description": "ADMIN: Reload the map list and messages.json",
     "guess_description": "Submit your guess after pressing Start guessing",
@@ -301,7 +311,12 @@
     "weeklyleaderboard_week_parameter": "Optional: an ISO week like 2026-W46 (defaults to this week)",
     "weeklyleaderboard_full_parameter": "Show every ranked player instead of only the top 10",
     "stats_description": "Show your player stats or another member’s",
-    "stats_member_parameter": "Whose stats to show (defaults to you)"
+    "stats_member_parameter": "Whose stats to show (defaults to you)",
+    "practice_description": "Replay the last main-game map posted on an earlier UTC date, without points or stats",
+    "practice_date_parameter": "Earlier UTC date in YYYY-MM-DD format",
+    "guesspractice_description": "Submit a guess for your current unscored practice replay",
+    "mychallenge_description": "Reopen the challenge image and current attempt you have already started",
+    "mychallenge_mode_parameter": "Which started challenge to reopen; leave blank when only one is active"
   },
   "admin": {
     "permission_body": "ADMIN: You need the Manage Server permission to use this command."
@@ -336,5 +351,30 @@
     "infinite_label": "Infinite mode",
     "infinite_value": "Current streak: **{current}**\nPersonal best: **{best}**",
     "na": "n/a"
+  },
+  "practice": {
+    "invalid_date_title": "Invalid practice date",
+    "invalid_date": "Use the date format **YYYY-MM-DD**, for example **2026-11-14**.",
+    "past_dates_only": "Practice replay is only available for earlier UTC dates. Use the live game for today’s map.",
+    "no_history_title": "No saved map for that date",
+    "no_history": "I do not have a saved main-game map for **{date}**. Older dates are available only when the database still contains a record identifying that day’s map.",
+    "map_unavailable_title": "Practice map unavailable",
+    "map_unavailable": "The map recorded for **{date}** is no longer in the loaded map list.",
+    "image_unavailable": "I found the map, but could not load its image. Please try again later.",
+    "map_title": "Practice map · {date}",
+    "start_description": "**Unscored replay · UTC date: {date}**\nYou have **{attempts} guesses**. Submit your answer with **/guesspractice**; autocomplete suggestions are available. Each wrong guess reveals a clearer image. This replay awards **no points** and does not affect stats or leaderboards.",
+    "session_title": "Practice replay",
+    "start_first": "Start a replay with **/guessmap practice date:YYYY-MM-DD** first.",
+    "already_complete": "This practice map is already complete. Start another date with **/guessmap practice**.",
+    "finished_title": "Practice map completed",
+    "empty_guess_title": "Missing guess",
+    "empty_guess": "Type a map name first.",
+    "guess_too_long_title": "Guess too long",
+    "guess_too_long": "That is too long for a map name (maximum {max_length} characters).",
+    "wrong_retry": "Not quite. **{attempts_left} guesses** remaining. The image is clearer now. Submit another answer with **{guess_command}**.",
+    "correct": "Correct! The map was **{map_name}** (UTC date **{date}**). This was an unscored replay; no points or stats were changed.",
+    "out_of_attempts": "That was your last guess. The map was **{map_name}** (UTC date **{date}**). No points or stats were changed.",
+    "autocomplete_no_session": "Start a replay with /guessmap practice first",
+    "autocomplete_finished": "Practice map completed; start another replay"
   }
 }

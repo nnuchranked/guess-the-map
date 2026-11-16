@@ -18,6 +18,13 @@ _ID_RE = re.compile(
     r"imgur\.com/(?:gallery/)?(?:[^/?#]*-)?([A-Za-z0-9]{5,10})(?:\.[A-Za-z]{3,4})?/?(?:[?#].*)?$"
 )
 
+# Common Roman-numeral sequel markers. Keep this deliberately bounded so
+# ordinary words such as "mix" are not mistaken for version numbers.
+_ROMAN_SUFFIXES = {
+    "i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x",
+    "xi", "xii", "xiii", "xiv", "xv", "xvi", "xvii", "xviii", "xix", "xx",
+}
+
 
 def imgur_id(url):
     m = _ID_RE.search(url or "")
@@ -39,8 +46,8 @@ def _ascii_part(name):
     return re.sub(r"[^\x00-\x7F]+", " ", text)
 
 
-def _answers(name, aliases, authors):
-    """Build valid answers: map name, aliases, authors and combined forms."""
+def _title_variants(name, aliases):
+    """Return map titles/aliases and their supported English-only variants."""
     titles = [str(name).strip()]
 
     if isinstance(aliases, str):
@@ -48,6 +55,21 @@ def _answers(name, aliases, authors):
 
     titles.extend(str(alias).strip() for alias in (aliases or []) if str(alias).strip())
 
+    variants = []
+    for title in titles:
+        variants.append(title)
+
+        # Preserve the existing support for English portions of multilingual names.
+        ascii_title = _ascii_part(title).strip()
+        if len(normalize(ascii_title)) >= 3 and normalize(ascii_title) != normalize(title):
+            variants.append(ascii_title)
+
+    return titles, variants
+
+
+def _answers(name, aliases, authors):
+    """Build exact valid answers: names, aliases, authors and combined forms."""
+    titles, _ = _title_variants(name, aliases)
     authors = list(
         dict.fromkeys(
             str(author).strip() for author in (authors or []) if str(author).strip()
@@ -57,15 +79,9 @@ def _answers(name, aliases, authors):
     variants = list(authors)
 
     for title in titles:
-        title_variants = [title]
-
-        # Preserve the existing support for English portions
-        # of multilingual map names.
         ascii_title = _ascii_part(title).strip()
-
-        if len(normalize(ascii_title)) >= 3 and normalize(ascii_title) != normalize(
-            title
-        ):
+        title_variants = [title]
+        if len(normalize(ascii_title)) >= 3 and normalize(ascii_title) != normalize(title):
             title_variants.append(ascii_title)
 
         variants.extend(title_variants)
@@ -80,13 +96,37 @@ def _answers(name, aliases, authors):
             variants.append(f"{title} | by {', '.join(authors)}")
 
     answers = set()
-
     for variant in variants:
         normalized = normalize(variant)
         if normalized:
             answers.add(normalized)
 
     return answers
+
+
+def _fuzzy_answers(name, aliases, authors):
+    """Answers eligible for typo tolerance; never include title+creator combinations."""
+    _, title_variants = _title_variants(name, aliases)
+    variants = title_variants + list(authors or [])
+    return {
+        key: _numbered_suffix(value)
+        for value in variants
+        if (key := normalize(value))
+    }
+
+
+def _numbered_suffix(text):
+    """Return a trailing numeric/Roman version marker, if the name has one."""
+    decomposed = unicodedata.normalize("NFKD", str(text)).casefold()
+    decomposed = "".join(c for c in decomposed if not unicodedata.combining(c))
+    tokens = re.findall(r"[a-z0-9]+", decomposed)
+    if not tokens:
+        return None
+
+    last = tokens[-1]
+    if last.isdigit() or last in _ROMAN_SUFFIXES:
+        return last
+    return None
 
 
 def _creator_names(game_map):
@@ -149,11 +189,9 @@ def parse_maps(raw):
             skipped += 1
             continue
         m["id"] = mid
-        m["_answers"] = _answers(
-            m["name"],
-            m.get("aliases", []),
-            _creator_names(m),
-        )
+        authors = _creator_names(m)
+        m["_answers"] = _answers(m["name"], m.get("aliases", []), authors)
+        m["_fuzzy_answers"] = _fuzzy_answers(m["name"], m.get("aliases", []), authors)
         if not m["_answers"]:  # e.g. a name made only of symbols: nobody can type it
             skipped += 1
             continue
@@ -243,10 +281,32 @@ def is_match(guess, game_map):
     g = normalize(guess)
     if not g:
         return False
+
+    # Exact matching remains available for every supported answer form, including
+    # aliases, creator names, and "Map | by Creator".
     for cand in game_map["_answers"]:
         if g == cand:
             return True
-        # fuzzy matching only for longer names, so short names can't be guessed by accident
+
+    # Fuzzy matching is limited to standalone titles, aliases, English title
+    # portions, and standalone creator names. Combined title+creator answers are
+    # exact-only so they cannot make a shorter/different map name look correct.
+    fuzzy_answers = game_map.get("_fuzzy_answers")
+    if fuzzy_answers is None:  # compatibility with map dictionaries created by older code
+        fuzzy_answers = _fuzzy_answers(
+            game_map.get("name", ""),
+            game_map.get("aliases", []),
+            _creator_names(game_map),
+        )
+
+    guess_suffix = _numbered_suffix(guess)
+    for cand, cand_suffix in fuzzy_answers.items():
+        if guess_suffix != cand_suffix and (guess_suffix is not None or cand_suffix is not None):
+            continue
+
+        if g.startswith(cand) or cand.startswith(g):
+            continue
+
         if len(cand) > 5 and abs(len(g) - len(cand)) <= 3:
             sm = difflib.SequenceMatcher(None, g, cand)
             if (

@@ -1,7 +1,7 @@
 # --- Game rules ---------------------------------------------------------
 MAX_ATTEMPTS = 3                      # tries per player, per round
 POINTS_BY_ATTEMPT = [3, 2, 1]         # base points for a correct guess on try 1 / 2 / 3
-BLUR_LEVELS = [0.07, 0.05, 0.03]     # blur radius as a fraction of reference width, per try
+BLUR_LEVELS = [0.07, 0.05, 0.03]      # blur radius as a fraction of reference width, per try
 BLUR_MULTIPLIER = 1.0                 # scales all blur levels at once
 BLUR_REFERENCE_WIDTH = 800
 MAP_INTERVAL_HOURS = 12               # hours between main daily maps
@@ -89,31 +89,24 @@ assert all(factor >= 1.0 for factor in ZOOM_OUT_FACTORS), "Zoom-out factors must
 assert MAP_INTERVAL_HOURS * 60 >= 1, "MAP_INTERVAL_HOURS must be at least 1 minute (1 / 60)"
 
 # --- Infinite mode filter combinations -----------------------------------
-# Only combinations listed here can appear. Weights are relative; they do not
-# have to add up to 100, but these defaults do for easier interpretation.
-#
-#
-# To disable a combination, remove its entry or set its weight to 0.
-# To make a combination more/less common, increase/decrease its weight.
+# Only combinations listed here can appear. Weights are relative, they dont add to 100
 
 INFINITE_FILTER_COMBINATIONS = {
     "blurred": 18,
-    "blurred+inverted": 20,
-    "blurred+zoom": 15,
-    "pixelated+inverted": 14,
-    "zoom+pixelated": 9,
+    "blurred+inverted": 10,
+    "blurred+zoom": 13,
+    "pixelated+inverted": 16,
+    "zoom+pixelated": 12,
     "blurred+pixelated+inverted": 8,
-    "zoom+inverted": 6,
+    "zoom+inverted": 12,
     "blurred+pixelated": 5,
     "zoom+blurred+pixelated": 3,
     "zoom+blurred+inverted": 1.5,
-    "zoom+pixelated+blurred+inverted": 0.5,
+    "zoom+pixelated+blurred+inverted": 3,
 }
 
 # --- Weekly main-game leaderboard ---------------------------------------
-# Weekly scoring periods are ISO weeks: Monday 00:00 through Sunday 23:59 UTC.
-# The previous week's leaderboard is posted once at this time, in the channel
-# configured with /guessmap setup. Defaults to Monday 00:05 UTC.
+# In ISO Format from a UTC reference
 WEEKLY_LEADERBOARD_DAY_UTC = 0       # Monday=0 ... Sunday=6
 WEEKLY_LEADERBOARD_HOUR_UTC = 0
 WEEKLY_LEADERBOARD_MINUTE_UTC = 5

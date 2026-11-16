@@ -38,6 +38,12 @@ def init():
             guild_id INTEGER NOT NULL, map_id TEXT NOT NULL, played_at INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS recent_idx ON recent(guild_id, played_at);
 
+        -- Separate recency history for Infinite mode; daily picks are unaffected.
+        CREATE TABLE IF NOT EXISTS infinite_recent(
+            guild_id INTEGER NOT NULL, map_id TEXT NOT NULL, played_at INTEGER NOT NULL);
+        CREATE INDEX IF NOT EXISTS infinite_recent_idx
+            ON infinite_recent(guild_id, played_at);
+
         CREATE TABLE IF NOT EXISTS player_map_stats(
             guild_id INTEGER NOT NULL,
             user_id INTEGER NOT NULL,
@@ -93,6 +99,28 @@ def init():
             PRIMARY KEY(guild_id, user_id, mode, challenge_key));
         CREATE INDEX IF NOT EXISTS mode_map_stats_rank_idx
             ON mode_map_stats(guild_id, mode, user_id);
+
+        -- Retained history of maps used by the main daily game. Unlike `rounds`,
+        -- this is never deleted when a round ends, so old UTC dates can be replayed.
+        CREATE TABLE IF NOT EXISTS main_map_history(
+            guild_id INTEGER NOT NULL,
+            channel_id INTEGER NOT NULL,
+            map_id TEXT NOT NULL,
+            started_at INTEGER NOT NULL,
+            PRIMARY KEY(channel_id, started_at));
+        CREATE INDEX IF NOT EXISTS main_map_history_date_idx
+            ON main_map_history(guild_id, started_at DESC);
+
+        -- Persist the currently displayed challenge attempt so players can
+        -- reopen its image after their ephemeral message disappears or the bot restarts.
+        CREATE TABLE IF NOT EXISTS mode_sessions(
+            guild_id INTEGER NOT NULL,
+            challenge_key TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            started_at INTEGER NOT NULL,
+            attempt_started_at INTEGER NOT NULL,
+            PRIMARY KEY(guild_id, challenge_key, mode, user_id));
 
         -- One active scheduled challenge per guild and challenge family.
         CREATE TABLE IF NOT EXISTS scheduled_challenges(
@@ -171,6 +199,23 @@ def init():
     _conn.execute(
         "CREATE INDEX IF NOT EXISTS player_map_stats_round_idx "
         "ON player_map_stats(guild_id,channel_id,round_started_at,attempts,solved)"
+    )
+
+    # Backfill replay history from records that earlier versions kept. This
+    # includes maps with player statistics and any round that is still active.
+    # Older releases stored round timestamps in seconds; current releases use ms.
+    _conn.execute(
+        "INSERT OR IGNORE INTO main_map_history(guild_id,channel_id,map_id,started_at) "
+        "SELECT DISTINCT guild_id,channel_id,map_id, "
+        "CASE WHEN round_started_at < 100000000000 THEN round_started_at*1000 "
+        "ELSE round_started_at END "
+        "FROM player_map_stats WHERE round_started_at>0"
+    )
+    _conn.execute(
+        "INSERT OR IGNORE INTO main_map_history(guild_id,channel_id,map_id,started_at) "
+        "SELECT guild_id,channel_id,map_id, "
+        "CASE WHEN started_at < 100000000000 THEN started_at*1000 ELSE started_at END "
+        "FROM rounds WHERE started_at>0"
     )
 
     # Preserve an existing player's difficulty choice when upgrading from the
@@ -525,6 +570,34 @@ def top_mode(guild_id, mode, limit=10):
     return _ranked_rows("mode_scores", guild_id, limit, mode=mode)
 
 
+def top_challenges(guild_id, limit=10):
+    """Return one leaderboard aggregated across all challenge modes.
+
+    Per-mode scores remain stored separately; this query combines their points,
+    correct answers, participation counts and solved-map attempt averages.
+    """
+    sql = (
+        "SELECT s.user_id,s.points,s.correct,COALESCE(p.played,0),"
+        "COALESCE(p.solved,0),p.avg_guesses "
+        "FROM ("
+        " SELECT user_id,SUM(points) AS points,SUM(correct) AS correct "
+        " FROM mode_scores WHERE guild_id=? GROUP BY user_id"
+        ") AS s "
+        "LEFT JOIN ("
+        " SELECT user_id,COUNT(*) AS played,SUM(solved) AS solved,"
+        " AVG(CASE WHEN solved=1 AND solved_guess_count>0 "
+        "THEN solved_guess_count END) AS avg_guesses "
+        " FROM mode_map_stats WHERE guild_id=? AND attempts>0 GROUP BY user_id"
+        ") AS p ON p.user_id=s.user_id "
+        "ORDER BY s.points DESC,s.correct DESC,s.user_id ASC"
+    )
+    params = [guild_id, guild_id]
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(max(0, int(limit)))
+    return _conn.execute(sql, params).fetchall()
+
+
 def get_mode_attempt(guild_id, challenge_key, mode, user_id):
     row = _conn.execute(
         "SELECT used, solved FROM mode_attempts "
@@ -532,6 +605,49 @@ def get_mode_attempt(guild_id, challenge_key, mode, user_id):
         (guild_id, challenge_key, mode, user_id),
     ).fetchone()
     return row if row else (0, 0)
+
+
+def ensure_mode_session(guild_id, challenge_key, mode, user_id, now_ms=None):
+    """Create a challenge session if needed and return its timestamps in UTC ms."""
+    now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
+    with _conn:
+        _conn.execute(
+            "INSERT OR IGNORE INTO mode_sessions "
+            "(guild_id,challenge_key,mode,user_id,started_at,attempt_started_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (guild_id, challenge_key, mode, user_id, now_ms, now_ms),
+        )
+    return get_mode_session(guild_id, challenge_key, mode, user_id)
+
+
+def get_mode_session(guild_id, challenge_key, mode, user_id):
+    return _conn.execute(
+        "SELECT started_at,attempt_started_at FROM mode_sessions "
+        "WHERE guild_id=? AND challenge_key=? AND mode=? AND user_id=?",
+        (guild_id, challenge_key, mode, user_id),
+    ).fetchone()
+
+
+def restart_mode_session_attempt(guild_id, challenge_key, mode, user_id, now_ms=None):
+    """Record the start of a newly revealed attempt without changing session age."""
+    now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
+    with _conn:
+        _conn.execute(
+            "INSERT INTO mode_sessions "
+            "(guild_id,challenge_key,mode,user_id,started_at,attempt_started_at) "
+            "VALUES(?,?,?,?,?,?) ON CONFLICT(guild_id,challenge_key,mode,user_id) "
+            "DO UPDATE SET attempt_started_at=excluded.attempt_started_at",
+            (guild_id, challenge_key, mode, user_id, now_ms, now_ms),
+        )
+    return get_mode_session(guild_id, challenge_key, mode, user_id)
+
+
+def delete_mode_session(guild_id, challenge_key, mode, user_id):
+    with _conn:
+        _conn.execute(
+            "DELETE FROM mode_sessions WHERE guild_id=? AND challenge_key=? AND mode=? AND user_id=?",
+            (guild_id, challenge_key, mode, user_id),
+        )
 
 
 def set_mode_attempt(guild_id, challenge_key, mode, user_id, used, solved):
@@ -873,7 +989,22 @@ def save_round(channel_id, guild_id, map_id, message_id, started_at):
             "message_id=excluded.message_id, started_at=excluded.started_at",
             (channel_id, guild_id, map_id, message_id, started_at),
         )
+        _conn.execute(
+            "INSERT OR IGNORE INTO main_map_history(guild_id,channel_id,map_id,started_at) "
+            "VALUES(?,?,?,?)",
+            (guild_id, channel_id, map_id, started_at),
+        )
         _conn.execute("DELETE FROM attempts WHERE channel_id=?", (channel_id,))
+
+
+def main_maps_on_date(guild_id, start_ms, end_ms):
+    """Return main-game maps posted during one UTC date, newest first."""
+    return _conn.execute(
+        "SELECT channel_id,map_id,started_at FROM main_map_history "
+        "WHERE guild_id=? AND started_at>=? AND started_at<? "
+        "ORDER BY started_at DESC,channel_id ASC",
+        (guild_id, int(start_ms), int(end_ms)),
+    ).fetchall()
 
 
 def delete_round(channel_id):
@@ -916,5 +1047,25 @@ def recent_ids(guild_id, limit):
     rows = _conn.execute(
         "SELECT map_id FROM recent WHERE guild_id=? ORDER BY played_at DESC,rowid DESC LIMIT ?",
         (guild_id, limit),
+    ).fetchall()
+    return [row[0] for row in rows]
+
+
+
+def add_infinite_recent(guild_id, map_id):
+    """Record a map selected for Infinite mode, separately from daily history."""
+    with _conn:
+        _conn.execute(
+            "INSERT INTO infinite_recent(guild_id,map_id,played_at) VALUES(?,?,?)",
+            (guild_id, map_id, int(time.time())),
+        )
+
+
+def infinite_recent_ids(guild_id, limit):
+    """Return the last N Infinite map selections for one server."""
+    rows = _conn.execute(
+        "SELECT map_id FROM infinite_recent WHERE guild_id=? "
+        "ORDER BY played_at DESC,rowid DESC LIMIT ?",
+        (guild_id, max(0, int(limit))),
     ).fetchall()
     return [row[0] for row in rows]

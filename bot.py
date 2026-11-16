@@ -6,8 +6,8 @@ import os
 import random
 import secrets
 import time
-from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 
 import aiohttp
 import discord
@@ -39,6 +39,8 @@ MODE_NO_CHALLENGE_CHOICE = "__GUESSMAP_MODE_NO_CHALLENGE__"
 MODE_START_FIRST_CHOICE = "__GUESSMAP_MODE_START_FIRST__"
 INFINITE_NO_SESSION_CHOICE = "__GUESSMAP_INFINITE_NO_SESSION__"
 INFINITE_FINISHED_CHOICE = "__GUESSMAP_INFINITE_FINISHED__"
+PRACTICE_NO_SESSION_CHOICE = "__GUESSMAP_PRACTICE_NO_SESSION__"
+PRACTICE_FINISHED_CHOICE = "__GUESSMAP_PRACTICE_FINISHED__"
 CHALLENGE_MODES = ("easy", "normal", "hard", "impossible", "zoom")
 DIFFICULTY_MODES = ("easy", "normal", "hard", "impossible")
 
@@ -155,6 +157,18 @@ class ScheduledChallenge:
 
 
 @dataclass
+class PracticeSession:
+    guild_id: int
+    user_id: int
+    channel_id: int
+    game_map: dict
+    path: str
+    utc_date: str
+    attempts: int = 0
+    completed: bool = False
+
+
+@dataclass
 class InfiniteSession:
     guild_id: int
     user_id: int
@@ -198,6 +212,15 @@ class InfiniteView(discord.ui.View):
             )
             return
 
+        if (active.message is not None and interaction.message is not None
+                and interaction.message.id != active.message.id):
+            await self.bot.send_text(
+                interaction, self.bot.t("infinite.replaced_body"),
+                title=self.bot.t("infinite.session_title"), ephemeral=True,
+                colour=discord.Colour.orange(),
+            )
+            return
+
         if active.guessed:
             await self.bot.start_infinite(interaction, owner_id=self.owner_id, edit_message=True)
         else:
@@ -224,6 +247,7 @@ class GuessBot(discord.Client):
         self.mode_timers = {}                         # (guild, challenge key, mode, user) -> monotonic time
         self.mode_starting = set()                    # prevents duplicate start-button requests
         self.infinite_sessions = {}                    # (guild_id, user_id) -> unscored InfiniteSession
+        self.practice_sessions = {}                    # (guild_id, user_id) -> unscored PracticeSession
 
     # ---------------------------------------------------------------- setup
     async def setup_hook(self):
@@ -250,6 +274,7 @@ class GuessBot(discord.Client):
         self.tree.add_command(make_pass_command(self))
         self.tree.add_command(make_guesschallenge_command(self))
         self.tree.add_command(make_guessinfinite_command(self))
+        self.tree.add_command(make_practice_guess_command(self))
         if guild:
             self.tree.copy_global_to(guild=guild)
             synced = await self.tree.sync(guild=guild)
@@ -442,11 +467,14 @@ class GuessBot(discord.Client):
         return lines
 
     def leaderboard_embed(self, guild_id, rows=None, page=0, page_size=LEADERBOARD_PAGE_SIZE,
-                          full=False, mode=None):
+                          full=False, mode=None, challenge=False):
         if rows is None:
-            rows = db.top_mode(guild_id, mode, None if full else 10) if mode else db.top(
-                guild_id, None if full else 10
-            )
+            if challenge:
+                rows = db.top_challenges(guild_id, None if full else 10)
+            elif mode:
+                rows = db.top_mode(guild_id, mode, None if full else 10)
+            else:
+                rows = db.top(guild_id, None if full else 10)
         total = len(rows)
         start = page * page_size
         page_rows = rows[start:start + page_size]
@@ -454,7 +482,9 @@ class GuessBot(discord.Client):
             description = self.t("leaderboard.empty")
         else:
             description = "\n".join(self._leaderboard_lines(page_rows, start + 1))
-        if mode:
+        if challenge:
+            title = self.t("leaderboard.challenge_all_title")
+        elif mode:
             mode_label = self.mode_title(mode)
             title = self.t("leaderboard.challenge_title", mode_label=mode_label)
         else:
@@ -523,8 +553,7 @@ class GuessBot(discord.Client):
             average_time=(f"{average_time / 1000:.1f}s" if average_time is not None else self.t("profile.na")),
         )
         weekly_value = self.t(
-            "profile.weekly_value",
-            week=profile["week_key"],
+            "profile.weekly_value", week=profile["week_key"],
             weekly_points=f"{profile['weekly_points']:g}",
             weekly_correct=profile["weekly_correct"],
         )
@@ -606,8 +635,30 @@ class GuessBot(discord.Client):
         if used >= config.MAX_ATTEMPTS:
             await self._say(interaction, self.t("main.all_tries_used"))
             return
-        if uid in rnd.attempt_started_at or uid in rnd.starting:
-            await self._say(interaction, self.t("main.timer_running", guess_command=self.guess_mention))
+        if uid in rnd.starting:
+            await self._say(interaction, self.t("main.map_loading"))
+            return
+        if uid in rnd.attempt_started_at:
+            # The player already has an active attempt. Re-send the exact
+            # current blur level without touching the original timer.
+            points = "/".join(str(p) for p in config.POINTS_BY_ATTEMPT)
+            text = self.t(
+                "main.private_map_description",
+                guess_command=self.guess_mention, attempts_left=config.MAX_ATTEMPTS - used,
+                points=points, bonus_interval=SPEED_BONUS_INTERVAL_SECONDS,
+                bonus_cutoff=SPEED_BONUS_CUTOFF_SECONDS,
+            )
+            try:
+                await interaction.response.defer(ephemeral=True, thinking=True)
+                payload = await self.map_message(text, rnd.path, used, title=self.t("main.private_map_title"))
+                await interaction.followup.send(ephemeral=True, **payload)
+            except (discord.HTTPException, OSError, ValueError) as exc:
+                log.warning("Could not reopen the current map for user %s: %s", uid, exc)
+                await self.send_text(
+                    interaction, self.t("main.map_unavailable"),
+                    title=self.t("common.image_unavailable_title"), ephemeral=True,
+                    colour=discord.Colour.red(),
+                )
             return
         rnd.starting.add(uid)
 
@@ -667,22 +718,43 @@ class GuessBot(discord.Client):
         return self.scheduled_challenges.get((guild_id, self.mode_kind(mode)))
 
     async def pick_infinite_map(self, guild_id, exclude_map_id=None):
-        """Pick a random fun-mode map without touching shared recent-map history."""
+        """Pick an Infinite map while avoiding the last N maps used in this server."""
         lock = self.map_pick_locks.setdefault(guild_id, asyncio.Lock())
         async with lock:
+            # Use the same N setting as the daily picker, but keep a separate
+            # history so Infinite selections never affect the scheduled game.
+            recent_limit = min(
+                max(0, int(config.RECENT_MAPS_MEMORY)),
+                max(0, len(self.maps) - 1),
+            )
+            recent = set(db.infinite_recent_ids(guild_id, recent_limit))
             pool = [
                 game_map for game_map in self.maps
-                if game_map["id"] not in self.bad and game_map["id"] != exclude_map_id
+                if game_map["id"] not in recent
+                and game_map["id"] not in self.bad
+                and game_map["id"] != exclude_map_id
             ]
             if not pool:
-                pool = [game_map for game_map in self.maps if game_map["id"] != exclude_map_id]
+                # Mirror the daily picker fallback when every non-recent map
+                # is unavailable or excluded.
+                pool = [
+                    game_map for game_map in self.maps
+                    if game_map["id"] not in self.bad
+                    and game_map["id"] != exclude_map_id
+                ]
             if not pool:
                 self.bad.clear()
+                pool = [game_map for game_map in self.maps if game_map["id"] != exclude_map_id]
+            if not pool:
                 pool = list(self.maps)
+
             random.shuffle(pool)
             for game_map in pool[:20]:
                 path = await images.ensure_image(self.session, game_map)
                 if path:
+                    # Record when selected, not when guessed, so simultaneous
+                    # sessions cannot receive the same recent map.
+                    db.add_infinite_recent(guild_id, game_map["id"])
                     return game_map, path
                 self.bad.add(game_map["id"])
         return None
@@ -703,6 +775,57 @@ class GuessBot(discord.Client):
 
         key = (interaction.guild_id, uid)
         previous = self.infinite_sessions.get(key)
+        if previous is not None and not previous.guessed and not edit_message:
+            # Infinite has no speed timer, but it must retain the same map and
+            # random effects when a user asks to view the current session again.
+            old_message = previous.message
+            try:
+                await interaction.response.defer(ephemeral=True, thinking=True)
+                file = await images.infinite_file(previous.path, previous.effects)
+                embed = discord.Embed(
+                    title=self.t("infinite.title"),
+                    description=(
+                        self.t(
+                            "infinite.description",
+                            skip_button=self.t("infinite.button_skip"),
+                            next_button=self.t("infinite.button_next"),
+                        ) + self.t("infinite.reopen_note")
+                    ),
+                    colour=discord.Colour.blurple(),
+                )
+                embed.add_field(
+                    name=self.t("infinite.streak_field"),
+                    value=self.infinite_streak_text(interaction.guild_id, uid),
+                    inline=False,
+                )
+                embed.add_field(
+                    name=self.t("infinite.filters_field"),
+                    value="\n".join(f"• {label}" for label in previous.effect_labels),
+                    inline=False,
+                )
+                embed.set_image(url=f"attachment://{file.filename}")
+                embed.set_footer(text=self.t("infinite.footer"))
+                message = await interaction.followup.send(
+                    embed=embed, file=file,
+                    view=InfiniteView(self, uid, completed=False, session=previous),
+                    ephemeral=True, wait=True,
+                )
+                previous.message = message
+                if old_message is not None and old_message.id != message.id:
+                    try:
+                        await old_message.edit(view=None)
+                    except discord.HTTPException:
+                        # The ephemeral message may have outlived its edit token.
+                        pass
+            except (discord.HTTPException, OSError, ValueError) as exc:
+                log.warning("Could not reopen Infinite map for user %s: %s", uid, exc)
+                await self.send_text(
+                    interaction, self.t("infinite.generation_failed"),
+                    title=self.t("infinite.generation_failed_title"), ephemeral=True,
+                    colour=discord.Colour.red(),
+                )
+            return
+
         exclude_id = previous.game_map["id"] if previous else None
         try:
             if edit_message:
@@ -727,10 +850,12 @@ class GuessBot(discord.Client):
             file = await images.infinite_file(path, effects)
             embed = discord.Embed(
                 title=self.t("infinite.title"),
-                description=self.t(
-                    "infinite.description",
-                    skip_button=self.t("infinite.button_skip"),
-                    next_button=self.t("infinite.button_next"),
+                description=(
+                    self.t(
+                        "infinite.description",
+                        skip_button=self.t("infinite.button_skip"),
+                        next_button=self.t("infinite.button_next"),
+                    ) + self.t("infinite.reopen_note")
                 ),
                 colour=discord.Colour.blurple(),
             )
@@ -908,6 +1033,313 @@ class GuessBot(discord.Client):
         except discord.HTTPException:
             pass
 
+    async def start_practice(self, interaction, date_text):
+        """Start an unscored replay of the last main-game map posted on a UTC date."""
+        try:
+            requested_date = datetime.strptime(date_text, "%Y-%m-%d").date()
+            if requested_date.isoformat() != date_text:
+                raise ValueError("date must use YYYY-MM-DD")
+        except (TypeError, ValueError):
+            await self.send_text(
+                interaction, self.t("practice.invalid_date"),
+                title=self.t("practice.invalid_date_title"), ephemeral=True, colour=discord.Colour.orange(),
+            )
+            return
+
+        today_utc = datetime.now(timezone.utc).date()
+        if requested_date >= today_utc:
+            await self.send_text(
+                interaction, self.t("practice.past_dates_only"),
+                title=self.t("practice.invalid_date_title"), ephemeral=True, colour=discord.Colour.orange(),
+            )
+            return
+
+        day_start = datetime(
+            requested_date.year, requested_date.month, requested_date.day, tzinfo=timezone.utc
+        )
+        start_ms = int(day_start.timestamp() * 1000)
+        end_ms = int((day_start + timedelta(days=1)).timestamp() * 1000)
+        history = db.main_maps_on_date(interaction.guild_id, start_ms, end_ms)
+        if not history:
+            await self.send_text(
+                interaction,
+                self.t("practice.no_history", date=date_text),
+                title=self.t("practice.no_history_title"), ephemeral=True, colour=discord.Colour.orange(),
+            )
+            return
+
+        # When admins posted more than one main map on a date, replay the most
+        # recently posted one. Challenges are excluded by main_map_history.
+        by_id = {game_map["id"]: game_map for game_map in self.maps}
+        game_map = next((by_id.get(row[1]) for row in history if row[1] in by_id), None)
+        if game_map is None:
+            await self.send_text(
+                interaction, self.t("practice.map_unavailable", date=date_text),
+                title=self.t("practice.map_unavailable_title"), ephemeral=True, colour=discord.Colour.red(),
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            path = await images.ensure_image(self.session, game_map)
+        except (aiohttp.ClientError, OSError, ValueError) as exc:
+            log.warning("Could not load practice image for map %s: %s", game_map.get("id"), exc)
+            path = None
+        if not path:
+            await self.send_text(
+                interaction, self.t("practice.image_unavailable"),
+                title=self.t("practice.map_unavailable_title"), ephemeral=True, colour=discord.Colour.red(),
+            )
+            return
+
+        session = PracticeSession(
+            interaction.guild_id, interaction.user.id, interaction.channel_id,
+            game_map, path, date_text,
+        )
+        self.practice_sessions[(interaction.guild_id, interaction.user.id)] = session
+        description = self.t(
+            "practice.start_description", date=date_text, attempts=config.MAX_ATTEMPTS,
+        )
+        try:
+            payload = await self.map_message(
+                description, path, 0, title=self.t("practice.map_title", date=date_text),
+            )
+            await interaction.followup.send(ephemeral=True, **payload)
+        except (discord.HTTPException, OSError, ValueError) as exc:
+            log.warning("Could not show practice map for %s: %s", date_text, exc)
+            self.practice_sessions.pop((interaction.guild_id, interaction.user.id), None)
+            await self.send_text(
+                interaction, self.t("practice.image_unavailable"),
+                title=self.t("practice.map_unavailable_title"), ephemeral=True, colour=discord.Colour.red(),
+            )
+
+    async def handle_practice_guess(self, interaction, text):
+        """Handle a replay guess without changing any scores, stats, or leaderboards."""
+        session = self.practice_sessions.get((interaction.guild_id, interaction.user.id))
+        if text == PRACTICE_NO_SESSION_CHOICE or session is None:
+            await self.send_text(
+                interaction, self.t("practice.start_first"),
+                title=self.t("practice.session_title"), ephemeral=True, colour=discord.Colour.orange(),
+            )
+            return
+        if text == PRACTICE_FINISHED_CHOICE or session.completed:
+            await self.send_text(
+                interaction, self.t("practice.already_complete"),
+                title=self.t("practice.finished_title"), ephemeral=True, colour=discord.Colour.orange(),
+            )
+            return
+
+        answer = (text or "").strip()
+        if not answer:
+            await self.send_text(
+                interaction, self.t("practice.empty_guess"),
+                title=self.t("practice.empty_guess_title"), ephemeral=True,
+            )
+            return
+        if len(answer) > config.MAX_GUESS_LENGTH:
+            await self.send_text(
+                interaction, self.t("practice.guess_too_long", max_length=config.MAX_GUESS_LENGTH),
+                title=self.t("practice.guess_too_long_title"), ephemeral=True, colour=discord.Colour.red(),
+            )
+            return
+
+        session.attempts += 1
+        correct = is_match(answer, session.game_map)
+        if correct:
+            session.completed = True
+            text_out = self.t(
+                "practice.correct", date=session.utc_date,
+                map_name=session.game_map["name"],
+            )
+            await self.reveal(
+                interaction.channel, session, text_out, interaction=interaction, ephemeral=True,
+            )
+            return
+
+        attempts_left = config.MAX_ATTEMPTS - session.attempts
+        if attempts_left > 0:
+            description = self.t(
+                "practice.wrong_retry", attempts_left=attempts_left,
+                guess_command="/guesspractice",
+            )
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            payload = await self.map_message(
+                description, session.path, session.attempts,
+                title=self.t("practice.map_title", date=session.utc_date),
+            )
+            await interaction.followup.send(ephemeral=True, **payload)
+            return
+
+        session.completed = True
+        text_out = self.t(
+            "practice.out_of_attempts", map_name=session.game_map["name"],
+            date=session.utc_date,
+        )
+        await self.reveal(
+            interaction.channel, session, text_out, interaction=interaction, ephemeral=True,
+        )
+
+    def _started_challenge_modes(self, guild_id, user_id):
+        """Return currently active challenge modes that this player has started."""
+        modes = []
+        difficulty = self.get_challenge(guild_id, "easy")
+        if difficulty:
+            selected = db.get_difficulty_selection(guild_id, difficulty.challenge_key, user_id)
+            if selected in DIFFICULTY_MODES:
+                used, solved = db.get_mode_attempt(
+                    guild_id, difficulty.challenge_key, selected, user_id
+                )
+                max_attempts = getattr(config, "DIFFICULTY_CHALLENGE_MAX_ATTEMPTS", 1)
+                if not solved and used < max_attempts:
+                    # A stored difficulty selection means this player already
+                    # used its Start button, including pre-update sessions.
+                    modes.append(selected)
+
+        zoom = self.get_challenge(guild_id, "zoom")
+        if zoom:
+            timer_key = (guild_id, zoom.challenge_key, "zoom", user_id)
+            used, solved = db.get_mode_attempt(
+                guild_id, zoom.challenge_key, "zoom", user_id
+            )
+            if (timer_key in self.mode_timers or db.get_mode_session(
+                guild_id, zoom.challenge_key, "zoom", user_id
+            )) and not solved and used < config.MAX_ATTEMPTS:
+                modes.append("zoom")
+        return modes
+
+    async def view_current_challenge(self, interaction, mode=None):
+        """Re-send the current challenge image without resetting its attempt timer."""
+        guild_id, user_id = interaction.guild_id, interaction.user.id
+        if mode is None:
+            modes = self._started_challenge_modes(guild_id, user_id)
+            if not modes:
+                await self.send_text(
+                    interaction, self.t("challenge.none_started"),
+                    title=self.t("challenge.no_active_title"), ephemeral=True, colour=discord.Colour.orange(),
+                )
+                return
+            if len(modes) > 1:
+                await self.send_text(
+                    interaction, self.t("challenge.choose_started_mode"),
+                    title=self.t("challenge.no_active_title"), ephemeral=True, colour=discord.Colour.orange(),
+                )
+                return
+            mode = modes[0]
+
+        if mode not in CHALLENGE_MODES:
+            await self.send_text(
+                interaction, self.t("challenge.invalid_mode"),
+                title=self.t("challenge.no_active_title"), ephemeral=True, colour=discord.Colour.orange(),
+            )
+            return
+
+        challenge = self.get_challenge(guild_id, mode)
+        if not challenge:
+            await self.send_text(
+                interaction, self.t("challenge.no_active_challenge"),
+                title=self.t("challenge.no_active_title"), ephemeral=True, colour=discord.Colour.orange(),
+            )
+            return
+
+        if mode in DIFFICULTY_MODES:
+            selected = db.get_difficulty_selection(guild_id, challenge.challenge_key, user_id)
+            if selected is None:
+                await self.send_text(
+                    interaction, self.t("challenge.select_difficulty_first"),
+                    title=self.t("challenge.no_active_title"), ephemeral=True, colour=discord.Colour.orange(),
+                )
+                return
+            if selected != mode:
+                await self.send_text(
+                    interaction, self.t("challenge.selected_now", selected=self.mode_title(selected)),
+                    title=self.t("common.challenge_updated_title"), ephemeral=True, colour=discord.Colour.orange(),
+                )
+                return
+
+        used, solved = db.get_mode_attempt(guild_id, challenge.challenge_key, mode, user_id)
+        max_attempts = (
+            getattr(config, "DIFFICULTY_CHALLENGE_MAX_ATTEMPTS", 1)
+            if mode in DIFFICULTY_MODES else config.MAX_ATTEMPTS
+        )
+        if solved or used >= max_attempts:
+            await self.send_text(
+                interaction,
+                self.t("challenge.difficulty_already_guessed")
+                if mode in DIFFICULTY_MODES else self.t("challenge.zoom_all_tries_used"),
+                title=self.t("challenge.no_active_title"), ephemeral=True, colour=discord.Colour.orange(),
+            )
+            return
+
+        timer_key = (guild_id, challenge.challenge_key, mode, user_id)
+        if timer_key in self.mode_starting:
+            await self.send_text(
+                interaction, self.t("challenge.challenge_loading"),
+                title=self.t("challenge.image_title", mode_label=self.mode_title(mode)),
+                ephemeral=True, colour=discord.Colour.orange(),
+            )
+            return
+        session_times = db.get_mode_session(guild_id, challenge.challenge_key, mode, user_id)
+        if session_times is None:
+            # A previously selected difficulty can be reconstructed even when
+            # it predates persisted mode_sessions. Zoom has no selection record,
+            # so a prior attempt or an in-memory timer is needed for that mode.
+            can_recover = (
+                mode in DIFFICULTY_MODES
+                or timer_key in self.mode_timers
+                or (mode == "zoom" and used > 0)
+            )
+            if not can_recover:
+                await self.send_text(
+                    interaction, self.t("challenge.start_first"),
+                    title=self.t("challenge.no_active_title"), ephemeral=True, colour=discord.Colour.orange(),
+                )
+                return
+            session_times = db.ensure_mode_session(
+                guild_id, challenge.challenge_key, mode, user_id,
+            )
+
+        # Preserve the existing attempt's original start time. Reopening the
+        # image does not grant a fresh speed-bonus window.
+        now_ms = int(time.time() * 1000)
+        elapsed = max(0.0, (now_ms - int(session_times[1])) / 1000.0)
+        if timer_key not in self.mode_timers:
+            self.mode_timers[timer_key] = time.monotonic() - elapsed
+
+        if mode in DIFFICULTY_MODES:
+            description = self.t(
+                "challenge.difficulty_start_description",
+                mode_label=self.mode_title(mode), points=f"{self.challenge_points(mode):g}",
+            )
+            attempt_index = 0
+        else:
+            points = "/".join(str(value) for value in config.POINTS_BY_ATTEMPT)
+            description = self.t(
+                "challenge.zoom_start_description", mode_label=self.mode_title(mode),
+                attempts=config.MAX_ATTEMPTS, points=points,
+            )
+            description += self.t(
+                "challenge.current_attempt_line", attempt=used + 1,
+                attempts=config.MAX_ATTEMPTS, attempts_left=max_attempts - used,
+            )
+            attempt_index = used
+        description += self.t("challenge.reopen_note")
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            file = await images.mode_file(challenge.path, mode, attempt_index)
+            embed = discord.Embed(
+                title=self.t("challenge.image_title", mode_label=self.mode_title(mode)),
+                description=description[:4096], colour=discord.Colour.blurple(),
+            )
+            embed.set_image(url=f"attachment://{file.filename}")
+            await interaction.followup.send(embed=embed, file=file, ephemeral=True)
+        except (discord.HTTPException, OSError, ValueError) as exc:
+            log.warning("Could not reopen %s challenge for user %s: %s", mode, user_id, exc)
+            await self.send_text(
+                interaction, self.t("challenge.image_unavailable"),
+                title=self.t("common.image_unavailable_title"), ephemeral=True, colour=discord.Colour.red(),
+            )
+
     def resolve_player_challenge_mode(self, guild_id, user_id):
         """Infer the selected challenge mode for /guesschallenge when mode is omitted."""
         candidates = []
@@ -921,7 +1353,9 @@ class GuessBot(discord.Client):
         if zoom:
             used, solved = db.get_mode_attempt(guild_id, zoom.challenge_key, "zoom", user_id)
             timer_key = (guild_id, zoom.challenge_key, "zoom", user_id)
-            if timer_key in self.mode_timers or used > 0 or solved:
+            if (timer_key in self.mode_timers
+                    or db.get_mode_session(guild_id, zoom.challenge_key, "zoom", user_id)
+                    or used > 0 or solved):
                 candidates.append("zoom")
 
         if len(candidates) == 1:
@@ -991,11 +1425,15 @@ class GuessBot(discord.Client):
             (challenge.guild_id, challenge.challenge_key, previous_selection, uid)
             if previous_selection in DIFFICULTY_MODES and previous_selection != mode else None
         )
-        if timer_key in self.mode_timers or timer_key in self.mode_starting:
-            await self._say(
-                interaction,
-                self.t("challenge.challenge_timer_running"),
-            )
+        if timer_key in self.mode_starting:
+            await self._say(interaction, self.t("challenge.challenge_loading"))
+            return
+        if timer_key in self.mode_timers or db.get_mode_session(
+            challenge.guild_id, challenge.challenge_key, mode, uid
+        ) is not None:
+            # Reopen the active attempt instead of rejecting the repeated Start
+            # button. view_current_challenge preserves the stored attempt timer.
+            await self.view_current_challenge(interaction, mode)
             return
 
         self.mode_starting.add(timer_key)
@@ -1034,7 +1472,14 @@ class GuessBot(discord.Client):
             await interaction.followup.send(embed=embed, file=file, ephemeral=True)
             if previous_timer_key is not None:
                 self.mode_timers.pop(previous_timer_key, None)
-            self.mode_timers[timer_key] = time.monotonic()
+                db.delete_mode_session(*previous_timer_key)
+            session_times = db.ensure_mode_session(
+                challenge.guild_id, challenge.challenge_key, mode, uid,
+            )
+            elapsed_since_attempt_start = max(
+                0.0, (int(time.time() * 1000) - int(session_times[1])) / 1000.0
+            )
+            self.mode_timers[timer_key] = time.monotonic() - elapsed_since_attempt_start
         except (discord.HTTPException, OSError, ValueError) as exc:
             log.warning("Could not start %s challenge for user %s: %s", mode, uid, exc)
             # If this interaction created the lock but failed before showing the
@@ -1063,6 +1508,9 @@ class GuessBot(discord.Client):
         embed.set_image(url=f"attachment://{file.filename}")
         await interaction.followup.send(embed=embed, file=file, ephemeral=True)
         timer_key = (challenge.guild_id, challenge.challenge_key, mode, interaction.user.id)
+        db.restart_mode_session_attempt(
+            challenge.guild_id, challenge.challenge_key, mode, interaction.user.id,
+        )
         self.mode_timers[timer_key] = time.monotonic()
 
     async def _reveal_mode_answer(self, interaction, challenge, text):
@@ -1166,11 +1614,21 @@ class GuessBot(discord.Client):
         timer_key = (challenge.guild_id, challenge.challenge_key, mode, uid)
         started = self.mode_timers.get(timer_key)
         if started is None:
-            await self._say(
-                interaction,
-                self.t("challenge.resume_after_restart"),
+            session_times = db.get_mode_session(
+                challenge.guild_id, challenge.challenge_key, mode, uid
             )
-            return
+            if session_times is not None:
+                elapsed_since_attempt_start = max(
+                    0.0, (int(time.time() * 1000) - int(session_times[1])) / 1000.0
+                )
+                started = time.monotonic() - elapsed_since_attempt_start
+                self.mode_timers[timer_key] = started
+            else:
+                await self._say(
+                    interaction,
+                    self.t("challenge.resume_after_restart"),
+                )
+                return
 
         correct = is_match(answer, challenge.game_map)
         used_now = used + 1
@@ -1198,6 +1656,7 @@ class GuessBot(discord.Client):
         self.mode_timers.pop(timer_key, None)
 
         if correct:
+            db.delete_mode_session(challenge.guild_id, challenge.challenge_key, mode, uid)
             if mode in DIFFICULTY_MODES:
                 points = self.challenge_points(mode)
                 score_detail = self.t("challenge.fixed_reward_detail", points=f"{points:g}")
@@ -1223,6 +1682,7 @@ class GuessBot(discord.Client):
             description = self.t("challenge.incorrect_zoom_retry", attempts_left=left)
             await self._show_mode_image(interaction, challenge, mode, used_now, description)
         else:
+            db.delete_mode_session(challenge.guild_id, challenge.challenge_key, mode, uid)
             miss_text = (
                 self.t("challenge.incorrect_difficulty")
                 if mode in DIFFICULTY_MODES
@@ -1454,7 +1914,7 @@ class GuessBot(discord.Client):
             log.warning("Pass response failed: %s", e)
 
     async def handle_guess(self, interaction, text):
-        """Process a /guess submission. All feedback and map images are private."""
+        """Process a /guess submission (ephemeral only)"""
         if text in (ALREADY_FINISHED_CHOICE, NO_ACTIVE_MAP_CHOICE, START_FIRST_CHOICE):
             await self._player_state(interaction)
             return
@@ -1473,8 +1933,8 @@ class GuessBot(discord.Client):
             return
 
         uid = interaction.user.id
-        correct = is_match(text, rnd.game_map)
-        rnd.used[uid] = used + 1                      # count it before any await (no races)
+        correct = is_match(text, rnd.game_map) # match ignoring case and symbols
+        rnd.used[uid] = used + 1                      # count before calling await
         if correct:
             rnd.solved.add(uid)
         db.set_attempt(rnd.channel_id, uid, used + 1, correct)
@@ -1504,16 +1964,16 @@ class GuessBot(discord.Client):
                     total=f"{total:g}", map_name=map_name,
                 )
                 msg += self.t("main.speed_bonus_line", bonus=f"{bonus:g}", elapsed=elapsed)
-                # the answer is shown ONLY to the person who guessed it
+                # reveal only to the guesser
                 await self.reveal(interaction.channel, rnd, msg, interaction=interaction, ephemeral=True)
                 await self._announce(interaction.channel, name, used + 1, f"{points:g}")
                 return
 
             left = config.MAX_ATTEMPTS - (used + 1)
             if left > 0:
-                await self._show_clearer(interaction, rnd, used + 1)      # less blur each try
+                await self._show_clearer(interaction, rnd, used + 1)      # reduce blur on subsequent tries
             else:
-                # final miss: reveal the map, but only to this player
+                # no more guesses, we reveal the map
                 msg = self.t("main.out_of_attempts", user=name, map_name=map_name)
                 await self.reveal(interaction.channel, rnd, msg, interaction=interaction, ephemeral=True)
         except discord.HTTPException as e:
@@ -1801,7 +2261,7 @@ class LeaderboardView(discord.ui.View):
     PAGE_SIZE = LEADERBOARD_PAGE_SIZE
 
     def __init__(self, bot, owner_id, guild_id, rows, mode=None, infinite_streaks=False,
-                 weekly=False, week_key=None):
+                 weekly=False, week_key=None, challenge=False):
         super().__init__(timeout=180)
         self.bot = bot
         self.owner_id = owner_id
@@ -1811,6 +2271,7 @@ class LeaderboardView(discord.ui.View):
         self.infinite_streaks = infinite_streaks
         self.weekly = weekly
         self.week_key = week_key
+        self.challenge = challenge
         self.page = 0
         self.max_page = max(0, (len(rows) - 1) // self.PAGE_SIZE)
         self.previous_button.label = bot.t("buttons.previous_page")[:80]
@@ -1839,6 +2300,11 @@ class LeaderboardView(discord.ui.View):
             embed = self.bot.weekly_leaderboard_embed(
                 self.guild_id, week_key=self.week_key, rows=self.rows, page=self.page,
                 page_size=self.PAGE_SIZE, full=True,
+            )
+        elif self.challenge:
+            embed = self.bot.leaderboard_embed(
+                self.guild_id, rows=self.rows, page=self.page,
+                page_size=self.PAGE_SIZE, full=True, challenge=True,
             )
         else:
             embed = self.bot.leaderboard_embed(
@@ -1936,8 +2402,25 @@ def make_group(bot):
     async def play(interaction: discord.Interaction):
         await bot.begin_guessing(interaction)
 
+    @group.command(name="practice", description=bot.t("commands.practice_description"))
+    @app_commands.describe(date=bot.t("commands.practice_date_parameter"))
+    async def practice(interaction: discord.Interaction, date: str):
+        await bot.start_practice(interaction, date)
+
     @group.command(name="challenge", description=bot.t("commands.challenge_description"))
     async def challenge(interaction: discord.Interaction):
+        started_modes = bot._started_challenge_modes(interaction.guild_id, interaction.user.id)
+        if len(started_modes) == 1:
+            await bot.view_current_challenge(interaction, started_modes[0])
+            return
+        if len(started_modes) > 1:
+            await bot.send_text(
+                interaction, bot.t("challenge.choose_started_mode"),
+                title=bot.t("challenge.no_active_title"), ephemeral=True,
+                colour=discord.Colour.orange(),
+            )
+            return
+
         active = bot.get_challenge(interaction.guild_id, "easy")
         if not active:
             await bot.send_text(
@@ -1950,6 +2433,18 @@ def make_group(bot):
             title=bot.t("challenge.difficulty_private_title"),
         )
         await interaction.response.send_message(embed=embed, view=DifficultyChallengeView(bot), ephemeral=True)
+
+    @group.command(name="mychallenge", description=bot.t("commands.mychallenge_description"))
+    @app_commands.choices(mode=[
+        app_commands.Choice(name=bot.mode_title("easy"), value="easy"),
+        app_commands.Choice(name=bot.mode_title("normal"), value="normal"),
+        app_commands.Choice(name=bot.mode_title("hard"), value="hard"),
+        app_commands.Choice(name=bot.mode_title("impossible"), value="impossible"),
+        app_commands.Choice(name=bot.mode_title("zoom"), value="zoom"),
+    ])
+    @app_commands.describe(mode=bot.t("commands.mychallenge_mode_parameter"))
+    async def mychallenge(interaction: discord.Interaction, mode: str | None = None):
+        await bot.view_current_challenge(interaction, mode)
 
     @group.command(name="infinite", description=bot.t("commands.infinite_description"))
     async def infinite(interaction: discord.Interaction):
@@ -2041,22 +2536,20 @@ def make_group(bot):
         )
 
     @group.command(name="challengeleaderboard", description=bot.t("commands.challengeleaderboard_description"))
-    @app_commands.choices(mode=[
-        app_commands.Choice(name=bot.mode_title("easy"), value="easy"),
-        app_commands.Choice(name=bot.mode_title("normal"), value="normal"),
-        app_commands.Choice(name=bot.mode_title("hard"), value="hard"),
-        app_commands.Choice(name=bot.mode_title("impossible"), value="impossible"),
-        app_commands.Choice(name=bot.mode_title("zoom"), value="zoom"),
-    ])
-    @app_commands.describe(
-        mode=bot.t("commands.challengeleaderboard_mode_parameter"),
-        full=bot.t("commands.challengeleaderboard_full_parameter"),
-    )
-    async def challengeleaderboard(interaction: discord.Interaction, mode: str, full: bool = False):
-        rows = db.top_mode(interaction.guild_id, mode, None if full else 10)
-        view = LeaderboardView(bot, interaction.user.id, interaction.guild_id, rows, mode=mode) if full and len(rows) > 20 else None
+    @app_commands.describe(full=bot.t("commands.challengeleaderboard_full_parameter"))
+    async def challengeleaderboard(interaction: discord.Interaction, full: bool = False):
+        # One combined ranking across Easy, Normal, Hard, Impossible and Zoom-out.
+        rows = db.top_challenges(interaction.guild_id, None if full else 10)
+        view = (
+            LeaderboardView(
+                bot, interaction.user.id, interaction.guild_id, rows, challenge=True
+            )
+            if full and len(rows) > LEADERBOARD_PAGE_SIZE else None
+        )
         send_kwargs = {
-            "embed": bot.leaderboard_embed(interaction.guild_id, rows=rows, full=full, mode=mode),
+            "embed": bot.leaderboard_embed(
+                interaction.guild_id, rows=rows, full=full, challenge=True,
+            ),
             "allowed_mentions": discord.AllowedMentions.none(),
         }
         if view is not None:
@@ -2202,7 +2695,9 @@ def make_guesschallenge_command(bot):
             return [app_commands.Choice(name=status, value=MODE_ALREADY_FINISHED_CHOICE)]
 
         timer_key = (challenge.guild_id, challenge.challenge_key, mode, uid)
-        if timer_key not in bot.mode_timers:
+        if (timer_key not in bot.mode_timers and not db.get_mode_session(
+            challenge.guild_id, challenge.challenge_key, mode, uid
+        )):
             return [app_commands.Choice(
                 name=bot.t("autocomplete.start_challenge_first"),
                 value=MODE_START_FIRST_CHOICE,
@@ -2211,6 +2706,35 @@ def make_guesschallenge_command(bot):
         return [app_commands.Choice(name=value, value=value) for value in names]
 
     return guesschallenge
+
+
+def make_practice_guess_command(bot):
+    @app_commands.command(
+        name="guesspractice",
+        description=bot.t("commands.guesspractice_description"),
+    )
+    @app_commands.describe(name=bot.t("commands.guess_name_parameter"))
+    @app_commands.guild_only()
+    async def guesspractice(interaction: discord.Interaction, name: str):
+        await bot.handle_practice_guess(interaction, name)
+
+    @guesspractice.autocomplete("name")
+    async def practice_autocomplete(interaction: discord.Interaction, current: str):
+        session = bot.practice_sessions.get((interaction.guild_id, interaction.user.id))
+        if session is None:
+            return [app_commands.Choice(
+                name=bot.t("practice.autocomplete_no_session"),
+                value=PRACTICE_NO_SESSION_CHOICE,
+            )]
+        if session.completed:
+            return [app_commands.Choice(
+                name=bot.t("practice.autocomplete_finished"),
+                value=PRACTICE_FINISHED_CHOICE,
+            )]
+        names = suggest(bot.suggestions(), current, config.AUTOCOMPLETE_MAX_RESULTS)
+        return [app_commands.Choice(name=value, value=value) for value in names]
+
+    return guesspractice
 
 
 def make_guessinfinite_command(bot):
