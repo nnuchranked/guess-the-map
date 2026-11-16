@@ -86,7 +86,7 @@
     "wrong_guess": [
       "😜 Not quite, {user}! Here's a clearer look. {attempts_left} left!",
       "🙈 Oof, close, but not that one! Less blur for you, {user}. {attempts_left} left!",
-      "🤔 Hmm, nope! Let Ivory wipe the lens a bit... {attempts_left} left!",
+      "🤔 Hmm, nope! Let me wipe the lens a bit... {attempts_left} left!",
       "🎈 Nice try, {user}! Squint at this one. {attempts_left} left!",
       "🧐 Not that one! The picture's getting sharper... {attempts_left} left!"
     ],
@@ -96,20 +96,20 @@
       "🎉 Great guess, {user}! First try?! You absolute legend!\n**+{points} points** (total: {total})",
       "🌟 Bullseye, {user}! You've got eyes like Raito!\n**+{points} points** (total: {total})",
       "🏆 WOW, {user}! No hesitation, no mercy!\n**+{points} points** (total: {total})",
-      "🥳 Nailed it on the first go, {user}! Kreuz would be proud!\n**+{points} points** (total: {total})",
+      "🥳 Nailed it on the first go, {user}!\n**+{points} points** (total: {total})",
       "🔮 Are you psychic, {user}?!\n**+{points} points** (total: {total})",
-      "🎯 Direct hit! {user} knows their maps. Bojack would be proud!\n**+{points} points** (total: {total})"
+      "🎯 Direct hit! {user} knows the maps.\n**+{points} points** (total: {total})"
     ],
     "correct_second": [
       "👏 Nice one, {user}! Second time's the charm!\n**+{points} points** (total: {total})",
-      "😄 You BOOM like dynamite, {user}!\n**+{points} points** (total: {total})",
+      "😄 Getting warmer, and then BOOM, {user}!\n**+{points} points** (total: {total})",
       "✨ Great recovery, {user}!\n**+{points} points** (total: {total})",
       "🎊 The blur couldn't stop you, {user}!\n**+{points} points** (total: {total})",
       "🙌 Two tries, one champion: {user}!\n**+{points} points** (total: {total})"
     ],
     "correct_third": [
       "😅 Impossible!\n**+{points} point** (total: {total})",
-      "🎈 Last chance, and you nailed it, {user}!\n**+{points} point** (total: {total})",
+      "🎈 Last chance, and you NAILED it, {user}!\n**+{points} point** (total: {total})",
       "🍀 Amazing guess, {user}!\n**+{points} point** (total: {total})",
       "💪 Never give up, never surrender, {user}!\n**+{points} point** (total: {total})",
       "🥹 Sweet relief! Well done, {user}!\n**+{points} point** (total: {total})"
@@ -121,7 +121,7 @@
       "😅 No tries left, {user}. Better luck with the next map!\n\nAnd don't share the answer, **the horse is watching.**"
     ],
     "day_over": [
-      "🌙 That's a wrap on the last map! It was **{map_name}**.\n\n{solvers} player(s) got it right.",
+      "🌙 That's a wrap on the last map! It was **{map_name}**.\n\n{solvers} player(s) cracked it.",
       "📖 The answer to the last map was **{map_name}**!\n\n{solvers} player(s) got it. A fresh one is below!",
       "⏰ Time's up for the last map! It was **{map_name}**.\n\n{solvers} player(s) solved it."
     ],
@@ -131,7 +131,7 @@
       "🎉 **{user}** just guessed the current map on try {attempt}! (+{points} points)",
       "🔍 Sharp eyes! **{user}** named the map on try {attempt} for **{points}** points!",
       "🏆 **{user}** solved it on try {attempt}! No spoilers, folks, or Nn gets mad!",
-      "🐑 Sheep is proud of **{user}**, who solved it on try {attempt}!"
+      "🏆 **{user}** solved it on try {attempt}! No spoilers, folks, or Chxn gets mad!"
     ],
     "next_attempt_timer": "The timer for your next attempt starts with this image.",
     "new_map_posted": "New map posted! The previous answer has been revealed.",
@@ -144,7 +144,7 @@
     "permission_missing_body": "I need these permissions in that channel:\nSend Messages, Attach Files, Embed Links and Read Message History.",
     "permission_missing_title": "Missing permissions",
     "setup_success_title": "Setup complete",
-    "setup_success": "All set! A new map will appear in {channel} {frequency} ({first}).\n\nUse `/guessmap newmap` any time to skip ahead.\nThe daily leaderboard is posted at {leaderboard_hour}:{leaderboard_minute} UTC.",
+    "setup_success": "All set! A new map will appear in {channel} {frequency} ({first}).\n\nUse `/guessmap newmap` any time to skip ahead.\nThe daily leaderboard is posted at {leaderboard_hour}:{leaderboard_minute} UTC.\nThe weekly leaderboard is posted every {weekly_day} at {weekly_hour}:{weekly_minute} UTC.",
     "setup_first_within_minute": "the first one appears within a minute",
     "setup_current_until_next": "the current map stays until then",
     "setup_every_day": "every day at {hour}",
@@ -153,14 +153,19 @@
     "daily_maps_disabled_title": "Daily maps disabled",
     "daily_maps_disabled": "Daily maps have been turned off.",
     "no_guess_command": "There isn't an active map in this channel right now.",
-    "restore_post_description": "A new map is ready!\n\nThe map stays hidden until you start. Press **{start_button}** to reveal it privately and start your timer, then answer with {guess_command}. Don't type your guess in chat.\n\nNext map <t:{next_reset}:R>."
+    "restore_post_description": "A new map is ready!\n\nThe map stays hidden until you start. Press **{start_button}** to reveal it privately and start your timer, then answer with {guess_command}. Don't type your guess in chat.\n\nNext map <t:{next_reset}:R>.",
+    "recap_not_available": "n/a",
+    "daily_recap": "**Daily recap**\n\nParticipants: **{participants}**\nSolved: **{solved}** · Unsolved: **{unsolved}**\n\nSolved on attempt 1: **{first_try}** · Attempt 2: **{second_try}** · Attempt 3: **{third_try}**\nAverage solve time: **{average_solve_time}**",
+    "daily_recap_empty": "No guesses were submitted for this map.",
+    "fastest_solver_field": "⚡ Fastest solver",
+    "fastest_solver_value": "{user} solved it in **{solve_time}** after revealing the map."
   },
   "challenge": {
-    "difficulty_announcement_title": "🎯 Daily Challenge · {challenge_key}",
+    "difficulty_announcement_title": "🎯 Daily Difficulty Challenge · {challenge_key}",
     "difficulty_announcement": "**Choose your difficulty**\n\nPick a mode, then submit your guess with **/guesschallenge** and your map name.\n\n**Rules**\n- You get **one guess total**.\n- Before guessing, you can switch to an easier difficulty, but never a harder one.\n- Your mode is remembered, so you only need to specify it if you've started zoom-out.\n\n**Difficulties**\n- {easy_label}\n- {normal_label}\n- {hard_label}\n- {impossible_label}\n\n**Points for a correct answer**\n{rewards}",
     "zoom_announcement_title": "🔎 Zoom-out Challenge · {challenge_key}",
     "zoom_announcement": "The map starts heavily zoomed in and zooms out after each wrong guess. You get **{attempts} tries**.\n\nPress the button to start privately, then submit your guess with **/guesschallenge** and your map name. You only need the mode option if you have another challenge active.\n\n**Points**\nBase points by attempt: **{points}**\nSpeed bonus: up to **+{speed_bonus}**, dropping every {bonus_interval} seconds until it reaches zero after {bonus_cutoff} seconds.",
-    "difficulty_private_title": "🎯 Daily Challenge",
+    "difficulty_private_title": "🎯 Daily Difficulty Challenge",
     "difficulty_private_description": "Choose a difficulty below.\n\nYou can switch to an easier option before guessing, but never a harder one. You get **one guess total**.\n\n**Rewards**\n{rewards}",
     "zoom_private_title": "🔎 Zoom-out Challenge",
     "no_active_daily": "There isn't an active daily difficulty challenge right now.",
@@ -210,9 +215,9 @@
     "button_skip": "Skip this map",
     "button_next": "Next random map",
     "title": "♾️ Infinite Map Challenge",
-    "description": "A random map with a random combination of filters. You get one guess.\n\nSubmit it with **/guessinfinite**, or press **{skip_button}** to reveal the answer without guessing. After either, the button becomes **{next_button}**.\n\nThis mode awards **no points** and has **no leaderboard**.",
+    "description": "A random map with a random combination of filters. You get one guess per map.\n\nCorrect answers build a consecutive streak. A wrong guess or skipping a map resets your current streak. Your current and best streaks are shown on every map and result.\n\nSubmit your answer with **/guessinfinite**, or press **{skip_button}** to reveal it. After either, the button becomes **{next_button}**.\n\nThis mode awards no points, but you can see the longest streaks with **/guessmap infiniteleaderboard**.",
     "filters_field": "Filters applied",
-    "footer": "Unscored fun mode • No leaderboard or points",
+    "footer": "Unscored fun mode • Streak leaderboard only • No points",
     "session_owner_error": "This Infinite session belongs to someone else.",
     "session_title": "Infinite mode",
     "expired_title": "Infinite session expired",
@@ -223,26 +228,34 @@
     "generation_failed": "I couldn't generate a random-filter map. Please try again.",
     "start_first": "Start with **/guessmap infinite** to get a random map first.",
     "skipped_title": "⏭️ Map skipped: {map_name}",
-    "skipped_description": "The map was **{map_name}**.\n\nNo points are awarded in Infinite mode. Press **{next_button}** when you're ready to continue.",
+    "skipped_description": "The map was **{map_name}**.\n\nSkipping resets your current streak. No points are awarded in Infinite mode.\n\nPress **{next_button}** when you're ready to continue.",
     "already_complete_title": "Map already completed",
-    "already_complete": "You've already guessed this map. Press **{next_button}** to continue.",
+    "already_complete": "This map is already complete. Press **{next_button}** to continue.",
     "missing_guess_title": "Missing guess",
     "missing_guess": "Enter a map name.",
     "guess_too_long_title": "Guess too long",
     "guess_too_long": "That's too long (max {max_length} characters).",
     "correct_title": "✅ {map_name}",
-    "correct_description": "Correct! You identified the map.\n\nNo points are awarded in Infinite mode.",
+    "correct_description": "Correct! You identified the map and extended your streak.\n\nNo points are awarded in Infinite mode. Keep it going with the next map!",
     "incorrect_title": "❌ Incorrect guess",
-    "incorrect_description": "Not quite. The map was **{map_name}**.\n\nNo points are awarded in Infinite mode. Try another random map!",
+    "incorrect_description": "Not quite. The map was **{map_name}**.\n\nYour current streak has been reset. No points are awarded in Infinite mode. Try another random map!",
     "autocomplete_no_session": "Start with /guessmap infinite first",
     "autocomplete_finished": "Map completed - press {next_button}",
     "no_map_session_error": "Start with **/guessmap infinite** to get a random map first.",
     "effects": {
-      "zoom": "Zoomed in x {factor:g}",
+      "zoom": "Zoomed in ×{factor:g}",
       "pixelated": "Pixelated ({width} px detail width)",
       "blurred": "Blurred (level {level_index}, {strength:g})",
       "inverted": "Colours inverted"
-    }
+    },
+    "streak_field": "🔥 Your Infinite streak",
+    "streak_status": "Current streak: **{current}** · Personal best: **{best}**",
+    "leaderboard_title": "🔥 Infinite Mode · Longest Correct Streaks",
+    "leaderboard_empty": "No Infinite streaks yet. Guess consecutive maps correctly to get on the leaderboard!",
+    "leaderboard_row": "{rank_label} <@{user_id}> — **{best}** best · {current} current",
+    "leaderboard_top_footer": "Top 10 • Ranked by longest consecutive correct guesses",
+    "leaderboard_page_footer": "Page {page}/{pages} • {total} players",
+    "leaderboard_all_footer": "All {total} players"
   },
   "autocomplete": {
     "no_active_map": "No active map in this channel",
@@ -265,7 +278,7 @@
     "newmap_description": "ADMIN: Skip ahead and post a brand-new map now",
     "play_description": "Privately reveal the current map and start your timer",
     "challenge_description": "Privately open the current daily difficulty choices",
-    "infinite_description": "Start an unscored random-filter map challenge",
+    "infinite_description": "Start Infinite mode: correct guesses build a streak and a personal best",
     "testchallenge_description": "ADMIN: Generate a fresh challenge right now for testing",
     "testchallenge_kind_parameter": "Which scheduled challenge to regenerate",
     "testchallenge_difficulty_choice": "Daily difficulty",
@@ -280,8 +293,15 @@
     "guess_name_parameter": "Your guess for the map's name",
     "guesschallenge_description": "Privately submit an answer for the challenge you selected",
     "guesschallenge_mode_parameter": "Optional: only needed if you have more than one challenge selected",
-    "guessinfinite_description": "Guess the map in your unscored Infinite random-filter session",
-    "pass_description": "Skip a guess to see a less blurry image (uses up a try)"
+    "guessinfinite_description": "Guess your current Infinite map and build your streak",
+    "pass_description": "Skip a guess to see a less blurry image (uses up a try)",
+    "infiniteleaderboard_description": "Show the longest correct-guess streaks in Infinite mode",
+    "infiniteleaderboard_full_parameter": "Show every player with a recorded Infinite streak",
+    "weeklyleaderboard_description": "Show this week’s leaderboard or an archived week",
+    "weeklyleaderboard_week_parameter": "Optional: an ISO week like 2026-W46 (defaults to this week)",
+    "weeklyleaderboard_full_parameter": "Show every ranked player instead of only the top 10",
+    "stats_description": "Show your player stats or another member’s",
+    "stats_member_parameter": "Whose stats to show (defaults to you)"
   },
   "admin": {
     "permission_body": "ADMIN: You need the Manage Server permission to use this command."
@@ -292,5 +312,29 @@
     "reload_success_title": "Maps reloaded",
     "reload_success": "Reloaded {map_count} maps.",
     "leaderboard_permission": "Only the person who opened this leaderboard can change its page."
+  },
+  "weekly": {
+    "title": "📅 Weekly Leaderboard · {week}",
+    "row": "{rank_label} <@{user_id}> — **{points}** pts | {correct} correct",
+    "empty": "No points yet for **{week}**. Be the first!",
+    "top_footer": "Top 10 · Week {week} · Resets every Monday at 00:00 UTC",
+    "page_footer": "Week {week} · Page {page}/{pages} · {total} players",
+    "all_footer": "Week {week} · All {total} players",
+    "invalid_week_title": "Invalid week",
+    "invalid_week": "Please use an ISO week in the format **YYYY-Www**, for example **{example}**."
+  },
+  "profile": {
+    "title": "📊 {display_name} · Player stats",
+    "description": "Performance across Guess the Map.",
+    "main_label": "Main game · All time",
+    "main_value": "Points: **{points}** · Correct: **{correct}**\nMaps solved: **{solved}/{played}** ({rate:.1f}%)\nAverage guesses when solved: **{average_guesses}**\nAverage solve time: **{average_time}**",
+    "weekly_label": "This week",
+    "weekly_value": "**{weekly_points}** points · {weekly_correct} correct · {week}",
+    "challenge_label": "Challenges · All time",
+    "challenge_row": "**{mode}** — {points} pts · {correct} correct · {solved}/{played} solved",
+    "no_challenges": "No challenge results yet.",
+    "infinite_label": "Infinite mode",
+    "infinite_value": "Current streak: **{current}**\nPersonal best: **{best}**",
+    "na": "n/a"
   }
 }

@@ -1,21 +1,23 @@
 import asyncio
+import calendar
 import json
 import logging
 import os
 import random
 import secrets
 import time
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 
 import aiohttp
-import config
-import db
 import discord
-import images
-from daily import next_reset
 from discord import app_commands
 from discord.ext import tasks
+
+import config
+import db
+import images
+from daily import next_reset
 from maps import build_suggestions, creators_text, is_match, load_maps, suggest
 from messages import Messages
 
@@ -67,6 +69,7 @@ class Round:
     used: dict = field(default_factory=dict)     # user_id -> guesses used on this map
     solved: set = field(default_factory=set)     # user_ids who got it right
     attempt_started_at: dict = field(default_factory=dict)  # user_id -> monotonic start time
+    player_started_at: dict = field(default_factory=dict)   # user_id -> first reveal time (epoch ms)
     starting: set = field(default_factory=set)              # prevents double-click timer resets
 
 
@@ -182,8 +185,8 @@ class InfiniteView(discord.ui.View):
     async def next_map(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.owner_id:
             await self.bot.send_text(
-                interaction, self.bot.t("infinite.session_owner_error"),
-                title=self.bot.t("infinite.session_title"), ephemeral=True, colour=discord.Colour.red(),
+                interaction, self.t("infinite.session_owner_error"),
+                title=self.t("infinite.session_title"), ephemeral=True, colour=discord.Colour.red(),
             )
             return
 
@@ -257,6 +260,7 @@ class GuessBot(discord.Client):
                 self.guess_mention = f"</guess:{cmd.id}>"
         self.auto_rounds.start()
         self.daily_leaderboards.start()
+        self.weekly_leaderboards.start()
         self.scheduled_challenge_loop.start()
         self.refresh_maps.start()
 
@@ -283,6 +287,7 @@ class GuessBot(discord.Client):
                 rnd.used[user_id] = used
                 if solved:
                     rnd.solved.add(user_id)
+            rnd.player_started_at.update(db.load_map_start_times(channel_id, started_at))
             self.rounds[channel_id] = rnd
             # Migrate old posts that publicly attached the map. New-format posts are
             # plain text already, so leave their layout alone and just reattach the view.
@@ -468,6 +473,124 @@ class GuessBot(discord.Client):
             embed.set_footer(text=self.t("leaderboard.top_footer"))
         return embed
 
+    def weekly_leaderboard_embed(self, guild_id, week_key=None, rows=None, page=0,
+                                 page_size=LEADERBOARD_PAGE_SIZE, full=False):
+        week_key = week_key or db.current_week_key()
+        if rows is None:
+            rows = db.top_weekly(guild_id, week_key, None if full else 10)
+        total = len(rows)
+        start = page * page_size
+        page_rows = rows[start:start + page_size]
+        if not rows:
+            description = self.t("weekly.empty", week=week_key)
+        else:
+            medals = ["🥇", "🥈", "🥉"]
+            lines = []
+            for index, (uid, points, correct) in enumerate(page_rows):
+                rank = start + index + 1
+                rank_label = medals[rank - 1] if rank <= 3 else f"**{rank}.**"
+                lines.append(self.t(
+                    "weekly.row", rank_label=rank_label, user_id=uid,
+                    points=f"{points:g}", correct=correct,
+                ))
+            description = "\n".join(lines)
+        title = self.t("weekly.title", week=week_key)
+        if full:
+            title += self.t("leaderboard.full_suffix")
+        embed = discord.Embed(title=title[:256], description=description[:4096], colour=discord.Colour.gold())
+        if full and total > page_size:
+            embed.set_footer(text=self.t(
+                "weekly.page_footer", page=page + 1,
+                pages=(total + page_size - 1) // page_size, total=total, week=week_key,
+            ))
+        elif full:
+            embed.set_footer(text=self.t("weekly.all_footer", total=total, week=week_key))
+        else:
+            embed.set_footer(text=self.t("weekly.top_footer", week=week_key))
+        return embed
+
+    def player_profile_embed(self, guild_id, member):
+        profile = db.player_profile(guild_id, member.id)
+        played = profile["played"]
+        solved = profile["solved"]
+        rate = (solved / played * 100.0) if played else 0.0
+        average_guesses = profile["average_guesses"]
+        average_time = profile["average_solve_time_ms"]
+        main_value = self.t(
+            "profile.main_value", points=f"{profile['points']:g}", correct=profile["correct"],
+            played=played, solved=solved, rate=rate,
+            average_guesses=(f"{average_guesses:.2f}" if average_guesses is not None else self.t("profile.na")),
+            average_time=(f"{average_time / 1000:.1f}s" if average_time is not None else self.t("profile.na")),
+        )
+        weekly_value = self.t(
+            "profile.weekly_value",
+            week=profile["week_key"],
+            weekly_points=f"{profile['weekly_points']:g}",
+            weekly_correct=profile["weekly_correct"],
+        )
+        mode_lines = []
+        for mode in CHALLENGE_MODES:
+            score = profile["mode_scores"].get(mode)
+            stats = profile["mode_stats"].get(mode, {"played": 0, "solved": 0})
+            if not score and not stats["played"]:
+                continue
+            score = score or {"points": 0.0, "correct": 0}
+            mode_lines.append(self.t(
+                "profile.challenge_row", mode=self.mode_title(mode),
+                points=f"{score['points']:g}", correct=score["correct"],
+                solved=stats["solved"], played=stats["played"],
+            ))
+        challenge_value = "\n".join(mode_lines) if mode_lines else self.t("profile.no_challenges")
+        infinite_value = self.t(
+            "profile.infinite_value", current=profile["infinite_current"],
+            best=profile["infinite_best"],
+        )
+        embed = discord.Embed(
+            title=self.t("profile.title", display_name=member.display_name)[:256],
+            description=self.t("profile.description"),
+            colour=discord.Colour.blurple(),
+        )
+        embed.add_field(name=self.t("profile.main_label"), value=main_value[:1024], inline=False)
+        embed.add_field(name=self.t("profile.weekly_label"), value=weekly_value[:1024], inline=True)
+        embed.add_field(name=self.t("profile.infinite_label"), value=infinite_value[:1024], inline=True)
+        embed.add_field(name=self.t("profile.challenge_label"), value=challenge_value[:1024], inline=False)
+        return embed
+
+    def infinite_streak_leaderboard_embed(self, guild_id, rows=None, page=0,
+                                          page_size=LEADERBOARD_PAGE_SIZE, full=False):
+        if rows is None:
+            rows = db.top_infinite_streaks(guild_id, None if full else 10)
+        total = len(rows)
+        start = page * page_size
+        page_rows = rows[start:start + page_size]
+        if not rows:
+            description = self.t("infinite.leaderboard_empty")
+        else:
+            medals = ["🥇", "🥈", "🥉"]
+            lines = []
+            for index, (uid, current, best) in enumerate(page_rows):
+                rank = start + index + 1
+                rank_label = medals[rank - 1] if rank <= 3 else f"**{rank}.**"
+                lines.append(self.t(
+                    "infinite.leaderboard_row", rank_label=rank_label, user_id=uid,
+                    current=current, best=best,
+                ))
+            description = "\n".join(lines)
+        title = self.t("infinite.leaderboard_title")
+        if full:
+            title += self.t("leaderboard.full_suffix")
+        embed = discord.Embed(title=title, description=description, colour=discord.Colour.gold())
+        if full and total > page_size:
+            embed.set_footer(text=self.t(
+                "infinite.leaderboard_page_footer", page=page + 1,
+                pages=(total + page_size - 1) // page_size, total=total,
+            ))
+        elif full:
+            embed.set_footer(text=self.t("infinite.leaderboard_all_footer", total=total))
+        else:
+            embed.set_footer(text=self.t("infinite.leaderboard_top_footer"))
+        return embed
+
     async def begin_guessing(self, interaction):
         """Privately reveal the current map and start this player's per-attempt timer."""
         rnd = self.rounds.get(interaction.channel_id)
@@ -499,8 +622,13 @@ class GuessBot(discord.Client):
             await interaction.response.defer(ephemeral=True, thinking=True)
             payload = await self.map_message(text, rnd.path, used, title=self.t("main.private_map_title"))
             await interaction.followup.send(ephemeral=True, **payload)
-            # The leaderboard only counts a map once the player actually submits
-            # a guess (or uses /pass), not merely when they preview the image.
+            # Track first reveal time for the end-of-day recap without counting a
+            # map as played until the player submits a guess or uses /pass.
+            started_playing_at = db.start_map_participation(
+                rnd.guild_id, uid, rnd.channel_id, rnd.started_at,
+                rnd.game_map["id"], int(time.time() * 1000),
+            )
+            rnd.player_started_at[uid] = started_playing_at
             rnd.attempt_started_at[uid] = time.monotonic()
         except discord.HTTPException as e:
             log.warning("Could not privately show map in channel %s: %s", interaction.channel_id, e)
@@ -559,13 +687,17 @@ class GuessBot(discord.Client):
                 self.bad.add(game_map["id"])
         return None
 
+    def infinite_streak_text(self, guild_id, user_id):
+        current, best = db.get_infinite_streak(guild_id, user_id)
+        return self.t("infinite.streak_status", current=current, best=best)
+
     async def start_infinite(self, interaction, owner_id=None, edit_message=False):
         """Start or advance one private, unscored random-filter map."""
         uid = interaction.user.id
         if owner_id is not None and uid != owner_id:
             await self.send_text(
-                interaction, self.bot.t("infinite.session_owner_error"),
-                title=self.bot.t("infinite.session_title"), ephemeral=True, colour=discord.Colour.red(),
+                interaction, self.t("infinite.session_owner_error"),
+                title=self.t("infinite.session_title"), ephemeral=True, colour=discord.Colour.red(),
             )
             return
 
@@ -603,6 +735,11 @@ class GuessBot(discord.Client):
                 colour=discord.Colour.blurple(),
             )
             embed.add_field(
+                name=self.t("infinite.streak_field"),
+                value=self.infinite_streak_text(interaction.guild_id, uid),
+                inline=False,
+            )
+            embed.add_field(
                 name=self.t("infinite.filters_field"),
                 value="\n".join(f"• {label}" for label in labels), inline=False,
             )
@@ -633,8 +770,8 @@ class GuessBot(discord.Client):
         uid = interaction.user.id
         if owner_id is not None and uid != owner_id:
             await self.send_text(
-                interaction, self.bot.t("infinite.session_owner_error"),
-                title=self.bot.t("infinite.session_title"), ephemeral=True, colour=discord.Colour.red(),
+                interaction, self.t("infinite.session_owner_error"),
+                title=self.t("infinite.session_title"), ephemeral=True, colour=discord.Colour.red(),
             )
             return
 
@@ -642,15 +779,21 @@ class GuessBot(discord.Client):
         if session is None:
             await self.send_text(
                 interaction, self.t("infinite.start_first"),
-                title=self.bot.t("infinite.session_title"), ephemeral=True, colour=discord.Colour.orange(),
+                title=self.t("infinite.session_title"), ephemeral=True, colour=discord.Colour.orange(),
             )
             return
         if session.guessed:
             await self.start_infinite(interaction, owner_id=uid, edit_message=True)
             return
 
-        # Treat skipping as completing this map, so /guessinfinite cannot be used afterwards.
+        # A skipped map breaks a consecutive-correct streak, but does not affect the best.
         session.guessed = True
+        current_streak, best_streak = db.record_infinite_result(
+            interaction.guild_id, uid, correct=False
+        )
+        streak_status = self.t(
+            "infinite.streak_status", current=current_streak, best=best_streak
+        )
         filename = f"{secrets.token_hex(6)}.jpg"
         embed = discord.Embed(
             title=self.t("infinite.skipped_title", map_name=session.game_map["name"]),
@@ -661,6 +804,9 @@ class GuessBot(discord.Client):
             colour=discord.Colour.orange(),
         )
         embed.add_field(name=self.t("common.creator_field"), value=creators_text(session.game_map))
+        embed.add_field(
+            name=self.t("infinite.streak_field"), value=streak_status, inline=False,
+        )
         embed.add_field(
             name=self.t("infinite.filters_field"),
             value="\n".join(f"• {label}" for label in session.effect_labels),
@@ -685,7 +831,7 @@ class GuessBot(discord.Client):
         if text == INFINITE_NO_SESSION_CHOICE or session is None:
             await self.send_text(
                 interaction, self.t("infinite.start_first"),
-                title=self.bot.t("infinite.session_title"), ephemeral=True, colour=discord.Colour.orange(),
+                title=self.t("infinite.session_title"), ephemeral=True, colour=discord.Colour.orange(),
             )
             return
         if text == INFINITE_FINISHED_CHOICE or session.guessed:
@@ -712,18 +858,29 @@ class GuessBot(discord.Client):
         # Consume the one guess before sending any response, preventing concurrent submissions.
         session.guessed = True
         correct = is_match(answer, session.game_map)
+        current_streak, best_streak = db.record_infinite_result(
+            interaction.guild_id, interaction.user.id, correct=correct
+        )
+        streak_status = self.t(
+            "infinite.streak_status", current=current_streak, best=best_streak
+        )
         if correct:
             description = self.t("infinite.correct_description")
             title = self.t("infinite.correct_title", map_name=session.game_map["name"])
             colour = discord.Colour.green()
         else:
-            description = self.t("infinite.incorrect_description", map_name=session.game_map["name"])
+            description = self.t(
+                "infinite.incorrect_description", map_name=session.game_map["name"]
+            )
             title = self.t("infinite.incorrect_title")
             colour = discord.Colour.orange()
 
         filename = f"{secrets.token_hex(6)}.jpg"
         embed = discord.Embed(title=title, description=description, colour=colour)
         embed.add_field(name=self.t("common.creator_field"), value=creators_text(session.game_map))
+        embed.add_field(
+            name=self.t("infinite.streak_field"), value=streak_status, inline=False,
+        )
         embed.add_field(
             name=self.t("infinite.filters_field"),
             value="\n".join(f"• {label}" for label in session.effect_labels), inline=False,
@@ -1167,9 +1324,33 @@ class GuessBot(discord.Client):
         db.delete_round(rnd.channel_id)
         await self.retire_post(channel, rnd)
         text = self.t("main.day_over", map_name=rnd.game_map["name"], solvers=len(rnd.solved))
-        await self.reveal(channel, rnd, text)
+        summary = db.map_round_summary(rnd.guild_id, rnd.channel_id, rnd.started_at)
+        if summary["participants"]:
+            average = (
+                f"{summary['average_solve_time_ms'] / 1000:.1f}s"
+                if summary["average_solve_time_ms"] is not None else self.t("main.recap_not_available")
+            )
+            text += "\n\n" + self.t(
+                "main.daily_recap", participants=summary["participants"],
+                solved=summary["solved"], unsolved=summary["participants"] - summary["solved"],
+                first_try=summary["first_try"], second_try=summary["second_try"],
+                third_try=summary["third_try"], average_solve_time=average,
+            )
+        else:
+            text += "\n\n" + self.t("main.daily_recap_empty")
+        extra_fields = []
+        if summary["fastest_user_id"] is not None:
+            extra_fields.append((
+                self.t("main.fastest_solver_field"),
+                self.t(
+                    "main.fastest_solver_value",
+                    user=f"<@{summary['fastest_user_id']}>",
+                    solve_time=f"{summary['fastest_solve_time_ms'] / 1000:.1f}s",
+                ),
+            ))
+        await self.reveal(channel, rnd, text, extra_fields=extra_fields)
 
-    async def reveal(self, channel, rnd, text, interaction=None, ephemeral=False):
+    async def reveal(self, channel, rnd, text, interaction=None, ephemeral=False, extra_fields=None):
         """Show the answer: name, creator, code and the unblurred image.
         With an interaction (+ ephemeral=True) only that player sees it."""
         m = rnd.game_map
@@ -1181,13 +1362,20 @@ class GuessBot(discord.Client):
         embed.add_field(name=self.t("common.creator_field"), value=creators_text(m))
         if m.get("code"):
             embed.add_field(name=self.t("common.code_field"), value=m["code"])
+        for field_name, field_value in (extra_fields or []):
+            embed.add_field(name=str(field_name)[:256], value=str(field_value)[:1024], inline=False)
         embed.set_image(url=f"attachment://{fname}")
         try:
             file = discord.File(rnd.path, filename=fname)
             if interaction:
-                await interaction.response.send_message(embed=embed, file=file, ephemeral=ephemeral)
+                await interaction.response.send_message(
+                    embed=embed, file=file, ephemeral=ephemeral,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
             else:
-                await channel.send(embed=embed, file=file)
+                await channel.send(
+                    embed=embed, file=file, allowed_mentions=discord.AllowedMentions.none()
+                )
         except discord.HTTPException as e:
             log.warning("Reveal failed in %s: %s", rnd.channel_id, e)
 
@@ -1258,7 +1446,7 @@ class GuessBot(discord.Client):
         db.set_attempt(rnd.channel_id, uid, used + 1, False)
         db.update_map_result(
             rnd.guild_id, uid, rnd.channel_id, rnd.started_at, rnd.game_map["id"],
-            used + 1, False,
+            used + 1, False, started_playing_at=rnd.player_started_at.get(uid, 0),
         )
         try:
             await self._show_clearer(interaction, rnd, used + 1)
@@ -1290,9 +1478,15 @@ class GuessBot(discord.Client):
         if correct:
             rnd.solved.add(uid)
         db.set_attempt(rnd.channel_id, uid, used + 1, correct)
+        started_playing_at = rnd.player_started_at.get(uid, 0)
+        solve_time_ms = (
+            max(1, int(time.time() * 1000) - started_playing_at)
+            if correct and started_playing_at else 0
+        )
         db.update_map_result(
             rnd.guild_id, uid, rnd.channel_id, rnd.started_at, rnd.game_map["id"],
-            used + 1, correct,
+            used + 1, correct, started_playing_at=started_playing_at,
+            solve_time_ms=solve_time_ms,
         )
         name = interaction.user.display_name
         map_name = rnd.game_map["name"]
@@ -1497,6 +1691,54 @@ class GuessBot(discord.Client):
     async def _wait_for_daily_leaderboard(self):
         await self.wait_until_ready()
 
+    # ------------------------------------------------------ weekly leaderboard
+    @tasks.loop(seconds=30)
+    async def weekly_leaderboards(self):
+        """Post the previous ISO week's standings once per week at the configured UTC time."""
+        try:
+            now = datetime.now(timezone.utc)
+            target_day = int(getattr(config, "WEEKLY_LEADERBOARD_DAY_UTC", 0))
+            target_hour = int(getattr(config, "WEEKLY_LEADERBOARD_HOUR_UTC", 0))
+            target_minute = int(getattr(config, "WEEKLY_LEADERBOARD_MINUTE_UTC", 5))
+            days_since_target = (now.weekday() - target_day) % 7
+            target_date = now.date() - timedelta(days=days_since_target)
+            target_at = datetime(
+                target_date.year, target_date.month, target_date.day,
+                target_hour, target_minute, tzinfo=timezone.utc,
+            )
+            if now < target_at:
+                return
+            # If the bot was offline at the scheduled minute, the next tick still
+            # posts the most recently completed ISO week rather than missing it.
+            week_key = db.previous_week_key(target_at)
+            for guild_id, channel_id, _next_at in db.all_settings():
+                if db.has_weekly_leaderboard_post(guild_id, week_key):
+                    continue
+                channel = self.get_channel(channel_id)
+                if channel is None:
+                    try:
+                        channel = await self.fetch_channel(channel_id)
+                    except discord.HTTPException:
+                        log.warning("Could not find weekly leaderboard channel %s", channel_id)
+                        continue
+                if not isinstance(channel, discord.TextChannel):
+                    continue
+                try:
+                    await channel.send(
+                        embed=self.weekly_leaderboard_embed(guild_id, week_key),
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                except discord.HTTPException as e:
+                    log.warning("Weekly leaderboard post failed in guild %s: %s", guild_id, e)
+                    continue
+                db.mark_weekly_leaderboard_post(guild_id, week_key)
+        except Exception:  # noqa: BLE001 - keep the scheduled loop alive
+            log.exception("weekly_leaderboards crashed this tick")
+
+    @weekly_leaderboards.before_loop
+    async def _wait_for_weekly_leaderboard(self):
+        await self.wait_until_ready()
+
     # ------------------------------------------------------ automatic maps
     @tasks.loop(seconds=5)
     async def auto_rounds(self):
@@ -1558,13 +1800,17 @@ class LeaderboardView(discord.ui.View):
     """Small pager for the full leaderboard, avoiding Discord embed size limits."""
     PAGE_SIZE = LEADERBOARD_PAGE_SIZE
 
-    def __init__(self, bot, owner_id, guild_id, rows, mode=None):
+    def __init__(self, bot, owner_id, guild_id, rows, mode=None, infinite_streaks=False,
+                 weekly=False, week_key=None):
         super().__init__(timeout=180)
         self.bot = bot
         self.owner_id = owner_id
         self.guild_id = guild_id
         self.rows = rows
         self.mode = mode
+        self.infinite_streaks = infinite_streaks
+        self.weekly = weekly
+        self.week_key = week_key
         self.page = 0
         self.max_page = max(0, (len(rows) - 1) // self.PAGE_SIZE)
         self.previous_button.label = bot.t("buttons.previous_page")[:80]
@@ -1584,13 +1830,22 @@ class LeaderboardView(discord.ui.View):
             return
         self.page = max(0, min(self.max_page, self.page + delta))
         self._update_buttons()
-        await interaction.response.edit_message(
-            embed=self.bot.leaderboard_embed(
+        if self.infinite_streaks:
+            embed = self.bot.infinite_streak_leaderboard_embed(
+                self.guild_id, rows=self.rows, page=self.page,
+                page_size=self.PAGE_SIZE, full=True,
+            )
+        elif self.weekly:
+            embed = self.bot.weekly_leaderboard_embed(
+                self.guild_id, week_key=self.week_key, rows=self.rows, page=self.page,
+                page_size=self.PAGE_SIZE, full=True,
+            )
+        else:
+            embed = self.bot.leaderboard_embed(
                 self.guild_id, rows=self.rows, page=self.page,
                 page_size=self.PAGE_SIZE, full=True, mode=self.mode,
-            ),
-            view=self,
-        )
+            )
+        await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(label="…", style=discord.ButtonStyle.secondary)
     async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1648,6 +1903,9 @@ def make_group(bot):
                 "main.setup_success", channel=channel.mention, frequency=every, first=first,
                 leaderboard_hour=f"{getattr(config, 'DAILY_LEADERBOARD_HOUR_UTC', config.DAILY_RESET_HOUR_UTC):02d}",
                 leaderboard_minute=f"{getattr(config, 'DAILY_LEADERBOARD_MINUTE_UTC', 0):02d}",
+                weekly_day=calendar.day_name[int(getattr(config, 'WEEKLY_LEADERBOARD_DAY_UTC', 0))],
+                weekly_hour=f"{int(getattr(config, 'WEEKLY_LEADERBOARD_HOUR_UTC', 0)):02d}",
+                weekly_minute=f"{int(getattr(config, 'WEEKLY_LEADERBOARD_MINUTE_UTC', 5)):02d}",
             ),
             title=bot.t("main.setup_success_title"), ephemeral=True, colour=discord.Colour.green(),
         )
@@ -1732,6 +1990,56 @@ def make_group(bot):
             send_kwargs["view"] = view
         await interaction.response.send_message(**send_kwargs)
 
+    @group.command(name="weeklyleaderboard", description=bot.t("commands.weeklyleaderboard_description"))
+    @app_commands.describe(
+        week=bot.t("commands.weeklyleaderboard_week_parameter"),
+        full=bot.t("commands.weeklyleaderboard_full_parameter"),
+    )
+    async def weeklyleaderboard(
+        interaction: discord.Interaction, week: str | None = None, full: bool = False
+    ):
+        if week is None or not week.strip():
+            week_key = db.current_week_key()
+        else:
+            candidate = week.strip().upper()
+            try:
+                parsed = datetime.strptime(candidate + "-1", "%G-W%V-%u")
+                week_key = db.current_week_key(parsed)
+                if week_key != candidate:
+                    raise ValueError("non-canonical ISO week")
+            except ValueError:
+                await bot.send_text(
+                    interaction, bot.t("weekly.invalid_week", example=db.current_week_key()),
+                    title=bot.t("weekly.invalid_week_title"), ephemeral=True,
+                    colour=discord.Colour.orange(),
+                )
+                return
+        rows = db.top_weekly(interaction.guild_id, week_key, None if full else 10)
+        view = (
+            LeaderboardView(
+                bot, interaction.user.id, interaction.guild_id, rows, weekly=True, week_key=week_key
+            )
+            if full and len(rows) > LEADERBOARD_PAGE_SIZE else None
+        )
+        send_kwargs = {
+            "embed": bot.weekly_leaderboard_embed(
+                interaction.guild_id, week_key=week_key, rows=rows, full=full
+            ),
+            "allowed_mentions": discord.AllowedMentions.none(),
+        }
+        if view is not None:
+            send_kwargs["view"] = view
+        await interaction.response.send_message(**send_kwargs)
+
+    @group.command(name="stats", description=bot.t("commands.stats_description"))
+    @app_commands.describe(member=bot.t("commands.stats_member_parameter"))
+    async def stats(interaction: discord.Interaction, member: discord.Member | None = None):
+        target = member or interaction.user
+        await interaction.response.send_message(
+            embed=bot.player_profile_embed(interaction.guild_id, target),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
     @group.command(name="challengeleaderboard", description=bot.t("commands.challengeleaderboard_description"))
     @app_commands.choices(mode=[
         app_commands.Choice(name=bot.mode_title("easy"), value="easy"),
@@ -1749,6 +2057,26 @@ def make_group(bot):
         view = LeaderboardView(bot, interaction.user.id, interaction.guild_id, rows, mode=mode) if full and len(rows) > 20 else None
         send_kwargs = {
             "embed": bot.leaderboard_embed(interaction.guild_id, rows=rows, full=full, mode=mode),
+            "allowed_mentions": discord.AllowedMentions.none(),
+        }
+        if view is not None:
+            send_kwargs["view"] = view
+        await interaction.response.send_message(**send_kwargs)
+
+    @group.command(name="infiniteleaderboard", description=bot.t("commands.infiniteleaderboard_description"))
+    @app_commands.describe(full=bot.t("commands.infiniteleaderboard_full_parameter"))
+    async def infiniteleaderboard(interaction: discord.Interaction, full: bool = False):
+        rows = db.top_infinite_streaks(interaction.guild_id, None if full else 10)
+        view = (
+            LeaderboardView(
+                bot, interaction.user.id, interaction.guild_id, rows, infinite_streaks=True
+            )
+            if full and len(rows) > LEADERBOARD_PAGE_SIZE else None
+        )
+        send_kwargs = {
+            "embed": bot.infinite_streak_leaderboard_embed(
+                interaction.guild_id, rows=rows, full=full,
+            ),
             "allowed_mentions": discord.AllowedMentions.none(),
         }
         if view is not None:

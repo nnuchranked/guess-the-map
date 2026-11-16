@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import time
+from datetime import datetime, timezone
 
 import config
 
@@ -109,6 +110,35 @@ def init():
             day_key TEXT NOT NULL,
             posted_at INTEGER NOT NULL,
             PRIMARY KEY(guild_id, day_key));
+
+        -- Weekly main-game standings. ISO-week keys create a natural weekly reset
+        -- while preserving past weeks for an archive.
+        CREATE TABLE IF NOT EXISTS weekly_scores(
+            guild_id INTEGER NOT NULL,
+            week_key TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            points REAL NOT NULL DEFAULT 0,
+            correct INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(guild_id, week_key, user_id));
+        CREATE INDEX IF NOT EXISTS weekly_scores_rank_idx
+            ON weekly_scores(guild_id, week_key, points DESC, correct DESC, user_id);
+
+        CREATE TABLE IF NOT EXISTS weekly_leaderboard_posts(
+            guild_id INTEGER NOT NULL,
+            week_key TEXT NOT NULL,
+            posted_at INTEGER NOT NULL,
+            PRIMARY KEY(guild_id, week_key));
+
+        -- Infinite mode has no points; this single row per player stores streak state.
+        CREATE TABLE IF NOT EXISTS infinite_streaks(
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            current_streak INTEGER NOT NULL DEFAULT 0,
+            best_streak INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(guild_id, user_id));
+        CREATE INDEX IF NOT EXISTS infinite_streaks_rank_idx
+            ON infinite_streaks(guild_id, best_streak DESC, current_streak DESC, user_id);
         """
     )
     # Older releases created these two tables without their intended keys.
@@ -128,6 +158,19 @@ def init():
     _conn.execute(
         "UPDATE player_map_stats SET solved_guess_count=attempts "
         "WHERE solved=1 AND solved_guess_count=0 AND attempts>0"
+    )
+    columns = {row[1] for row in _conn.execute("PRAGMA table_info(player_map_stats)")}
+    if "started_playing_at" not in columns:
+        _conn.execute(
+            "ALTER TABLE player_map_stats ADD COLUMN started_playing_at INTEGER NOT NULL DEFAULT 0"
+        )
+    if "solve_time_ms" not in columns:
+        _conn.execute(
+            "ALTER TABLE player_map_stats ADD COLUMN solve_time_ms INTEGER NOT NULL DEFAULT 0"
+        )
+    _conn.execute(
+        "CREATE INDEX IF NOT EXISTS player_map_stats_round_idx "
+        "ON player_map_stats(guild_id,channel_id,round_started_at,attempts,solved)"
     )
 
     # Preserve an existing player's difficulty choice when upgrading from the
@@ -232,7 +275,32 @@ def _ensure_attempts_primary_key():
 
 
 # ---- main daily scores --------------------------------------------------
-def add_points(guild_id, user_id, points):
+def current_week_key(when=None):
+    """Return the ISO week key (Monday-Sunday, UTC), e.g. 2026-W46."""
+    if when is None:
+        moment = datetime.now(timezone.utc)
+    elif isinstance(when, datetime):
+        moment = when.astimezone(timezone.utc) if when.tzinfo else when.replace(tzinfo=timezone.utc)
+    else:
+        moment = datetime.fromtimestamp(float(when), tz=timezone.utc)
+    iso = moment.isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
+
+
+def previous_week_key(when=None):
+    """Return the previous ISO week relative to a UTC datetime/timestamp."""
+    if when is None:
+        moment = datetime.now(timezone.utc)
+    elif isinstance(when, datetime):
+        moment = when.astimezone(timezone.utc) if when.tzinfo else when.replace(tzinfo=timezone.utc)
+    else:
+        moment = datetime.fromtimestamp(float(when), tz=timezone.utc)
+    return current_week_key(moment.timestamp() - 7 * 86400)
+
+
+def add_points(guild_id, user_id, points, when=None):
+    """Update lifetime and current-week scores atomically."""
+    week_key = current_week_key(when)
     with _conn:
         _conn.execute(
             "INSERT INTO scores(guild_id,user_id,points,correct) VALUES(?,?,?,1) "
@@ -240,9 +308,31 @@ def add_points(guild_id, user_id, points):
             "points=points+excluded.points, correct=correct+1",
             (guild_id, user_id, points),
         )
+        _conn.execute(
+            "INSERT INTO weekly_scores(guild_id,week_key,user_id,points,correct) "
+            "VALUES(?,?,?,?,1) "
+            "ON CONFLICT(guild_id,week_key,user_id) DO UPDATE SET "
+            "points=weekly_scores.points+excluded.points, "
+            "correct=weekly_scores.correct+1",
+            (guild_id, week_key, user_id, points),
+        )
     return _conn.execute(
         "SELECT points FROM scores WHERE guild_id=? AND user_id=?", (guild_id, user_id)
     ).fetchone()[0]
+
+
+def top_weekly(guild_id, week_key=None, limit=10):
+    week_key = week_key or current_week_key()
+    sql = (
+        "SELECT user_id,points,correct FROM weekly_scores "
+        "WHERE guild_id=? AND week_key=? "
+        "ORDER BY points DESC,correct DESC,user_id ASC"
+    )
+    params = [guild_id, week_key]
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(max(0, int(limit)))
+    return _conn.execute(sql, params).fetchall()
 
 
 def _ranked_rows(score_table, guild_id, limit=None, mode=None):
@@ -271,7 +361,7 @@ def _ranked_rows(score_table, guild_id, limit=None, mode=None):
         "LEFT JOIN ("
         f" SELECT user_id{stats_mode_column}, COUNT(*) AS played, SUM(solved) AS solved, "
         f" AVG(CASE WHEN solved=1 AND solved_guess_count>0 THEN solved_guess_count END) AS avg_guesses "
-        f" FROM {stats_table} WHERE {stats_where} GROUP BY user_id{stats_group}"
+        f" FROM {stats_table} WHERE {stats_where} AND attempts>0 GROUP BY user_id{stats_group}"
         ") AS p ON p.user_id=s.user_id" + stats_join +
         f" WHERE {where} ORDER BY s.points DESC, s.correct DESC, s.user_id ASC"
     )
@@ -286,22 +376,134 @@ def top(guild_id, limit=10):
     return _ranked_rows("scores", guild_id, limit)
 
 
-def update_map_result(guild_id, user_id, channel_id, round_started_at, map_id, attempts, solved):
+def start_map_participation(guild_id, user_id, channel_id, round_started_at, map_id, started_playing_at):
+    """Persist a player's first private reveal time without counting a played map yet."""
     with _conn:
         _conn.execute(
             "INSERT INTO player_map_stats "
-            "(guild_id,user_id,channel_id,round_started_at,map_id,attempts,solved,solved_guess_count) "
-            "VALUES(?,?,?,?,?,?,?,?) "
+            "(guild_id,user_id,channel_id,round_started_at,map_id,attempts,solved,solved_guess_count,"
+            "started_playing_at,solve_time_ms) VALUES(?,?,?,?,?,0,0,0,?,0) "
+            "ON CONFLICT(guild_id,user_id,channel_id,round_started_at) DO UPDATE SET "
+            "started_playing_at=CASE WHEN player_map_stats.started_playing_at=0 "
+            "THEN excluded.started_playing_at ELSE player_map_stats.started_playing_at END",
+            (guild_id, user_id, channel_id, round_started_at, map_id, started_playing_at),
+        )
+    row = _conn.execute(
+        "SELECT started_playing_at FROM player_map_stats "
+        "WHERE guild_id=? AND user_id=? AND channel_id=? AND round_started_at=?",
+        (guild_id, user_id, channel_id, round_started_at),
+    ).fetchone()
+    return int(row[0] or started_playing_at)
+
+
+def load_map_start_times(channel_id, round_started_at):
+    rows = _conn.execute(
+        "SELECT user_id,started_playing_at FROM player_map_stats "
+        "WHERE channel_id=? AND round_started_at=? AND started_playing_at>0",
+        (channel_id, round_started_at),
+    ).fetchall()
+    return {int(user_id): int(started_at) for user_id, started_at in rows}
+
+
+def update_map_result(guild_id, user_id, channel_id, round_started_at, map_id, attempts, solved,
+                      started_playing_at=0, solve_time_ms=0):
+    with _conn:
+        _conn.execute(
+            "INSERT INTO player_map_stats "
+            "(guild_id,user_id,channel_id,round_started_at,map_id,attempts,solved,solved_guess_count,"
+            "started_playing_at,solve_time_ms) VALUES(?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(guild_id,user_id,channel_id,round_started_at) DO UPDATE SET "
             "attempts=MAX(player_map_stats.attempts,excluded.attempts), "
             "solved=MAX(player_map_stats.solved,excluded.solved), "
             "solved_guess_count=CASE WHEN excluded.solved=1 THEN "
             "MIN(CASE WHEN player_map_stats.solved_guess_count=0 THEN excluded.solved_guess_count "
             "ELSE player_map_stats.solved_guess_count END, excluded.solved_guess_count) "
-            "ELSE player_map_stats.solved_guess_count END",
+            "ELSE player_map_stats.solved_guess_count END, "
+            "started_playing_at=CASE WHEN player_map_stats.started_playing_at=0 "
+            "THEN excluded.started_playing_at ELSE player_map_stats.started_playing_at END, "
+            "solve_time_ms=CASE WHEN excluded.solved=1 AND excluded.solve_time_ms>0 THEN "
+            "CASE WHEN player_map_stats.solve_time_ms=0 THEN excluded.solve_time_ms "
+            "ELSE MIN(player_map_stats.solve_time_ms,excluded.solve_time_ms) END "
+            "ELSE player_map_stats.solve_time_ms END",
             (guild_id, user_id, channel_id, round_started_at, map_id, attempts,
-             int(solved), attempts if solved else 0),
+             int(solved), attempts if solved else 0, int(started_playing_at or 0), int(solve_time_ms or 0)),
         )
+
+
+def map_round_summary(guild_id, channel_id, round_started_at):
+    """Aggregate recap stats for one exact daily-map instance."""
+    row = _conn.execute(
+        "SELECT COUNT(*), COALESCE(SUM(solved),0), "
+        "SUM(CASE WHEN solved=1 AND solved_guess_count=1 THEN 1 ELSE 0 END), "
+        "SUM(CASE WHEN solved=1 AND solved_guess_count=2 THEN 1 ELSE 0 END), "
+        "SUM(CASE WHEN solved=1 AND solved_guess_count>=3 THEN 1 ELSE 0 END), "
+        "AVG(CASE WHEN solved=1 AND solve_time_ms>0 THEN solve_time_ms END) "
+        "FROM player_map_stats WHERE guild_id=? AND channel_id=? AND round_started_at=? AND attempts>0",
+        (guild_id, channel_id, round_started_at),
+    ).fetchone()
+    fastest = _conn.execute(
+        "SELECT user_id,solve_time_ms FROM player_map_stats "
+        "WHERE guild_id=? AND channel_id=? AND round_started_at=? "
+        "AND solved=1 AND solve_time_ms>0 "
+        "ORDER BY solve_time_ms ASC,user_id ASC LIMIT 1",
+        (guild_id, channel_id, round_started_at),
+    ).fetchone()
+    return {
+        "participants": int(row[0] or 0),
+        "solved": int(row[1] or 0),
+        "first_try": int(row[2] or 0),
+        "second_try": int(row[3] or 0),
+        "third_try": int(row[4] or 0),
+        "average_solve_time_ms": float(row[5]) if row[5] is not None else None,
+        "fastest_user_id": int(fastest[0]) if fastest else None,
+        "fastest_solve_time_ms": int(fastest[1]) if fastest else None,
+    }
+
+
+def player_profile(guild_id, user_id, week_key=None):
+    """Collect the compact set of lifetime, weekly, challenge and Infinite stats."""
+    week_key = week_key or current_week_key()
+    score = _conn.execute(
+        "SELECT points,correct FROM scores WHERE guild_id=? AND user_id=?",
+        (guild_id, user_id),
+    ).fetchone() or (0.0, 0)
+    main_stats = _conn.execute(
+        "SELECT COUNT(*),COALESCE(SUM(solved),0), "
+        "AVG(CASE WHEN solved=1 AND solved_guess_count>0 THEN solved_guess_count END), "
+        "AVG(CASE WHEN solved=1 AND solve_time_ms>0 THEN solve_time_ms END) "
+        "FROM player_map_stats WHERE guild_id=? AND user_id=? AND attempts>0",
+        (guild_id, user_id),
+    ).fetchone()
+    weekly = _conn.execute(
+        "SELECT points,correct FROM weekly_scores WHERE guild_id=? AND week_key=? AND user_id=?",
+        (guild_id, week_key, user_id),
+    ).fetchone() or (0.0, 0)
+    mode_scores = _conn.execute(
+        "SELECT mode,points,correct FROM mode_scores WHERE guild_id=? AND user_id=?",
+        (guild_id, user_id),
+    ).fetchall()
+    mode_stats = _conn.execute(
+        "SELECT mode,COUNT(*),COALESCE(SUM(solved),0) FROM mode_map_stats "
+        "WHERE guild_id=? AND user_id=? AND attempts>0 GROUP BY mode",
+        (guild_id, user_id),
+    ).fetchall()
+    streak = _conn.execute(
+        "SELECT current_streak,best_streak FROM infinite_streaks "
+        "WHERE guild_id=? AND user_id=?", (guild_id, user_id),
+    ).fetchone() or (0, 0)
+    return {
+        "points": float(score[0] or 0), "correct": int(score[1] or 0),
+        "played": int(main_stats[0] or 0), "solved": int(main_stats[1] or 0),
+        "average_guesses": float(main_stats[2]) if main_stats[2] is not None else None,
+        "average_solve_time_ms": float(main_stats[3]) if main_stats[3] is not None else None,
+        "weekly_points": float(weekly[0] or 0), "weekly_correct": int(weekly[1] or 0),
+        "mode_scores": {mode: {"points": float(points), "correct": int(correct)}
+                        for mode, points, correct in mode_scores},
+        "mode_stats": {mode: {"played": int(played), "solved": int(solved)}
+                       for mode, played, solved in mode_stats},
+        "infinite_current": int(streak[0]), "infinite_best": int(streak[1]),
+        "week_key": week_key,
+    }
 
 
 # ---- challenge mode scores ---------------------------------------------
@@ -548,6 +750,62 @@ def delete_scheduled_challenge(guild_id, kind):
         )
 
 
+# ---- Infinite mode streaks -----------------------------------------------
+def get_infinite_streak(guild_id, user_id):
+    """Return (current_streak, best_streak), or (0, 0) for a new player."""
+    row = _conn.execute(
+        "SELECT current_streak,best_streak FROM infinite_streaks "
+        "WHERE guild_id=? AND user_id=?",
+        (guild_id, user_id),
+    ).fetchone()
+    return (int(row[0]), int(row[1])) if row else (0, 0)
+
+
+def record_infinite_result(guild_id, user_id, correct):
+    """Record one resolved Infinite map atomically and return updated streak stats.
+
+    Correct answers increment the current streak and raise the best when needed.
+    Incorrect answers and skips reset only the current streak. No score or points
+    table is touched. A single indexed row is updated per resolved map.
+    """
+    won = int(bool(correct))
+    now = int(time.time())
+    with _conn:
+        _conn.execute(
+            "INSERT INTO infinite_streaks "
+            "(guild_id,user_id,current_streak,best_streak,updated_at) "
+            "VALUES(?,?,?,?,?) "
+            "ON CONFLICT(guild_id,user_id) DO UPDATE SET "
+            "current_streak=CASE WHEN excluded.current_streak=1 "
+            "THEN infinite_streaks.current_streak+1 ELSE 0 END, "
+            "best_streak=MAX(infinite_streaks.best_streak, "
+            "CASE WHEN excluded.current_streak=1 "
+            "THEN infinite_streaks.current_streak+1 ELSE 0 END), "
+            "updated_at=excluded.updated_at",
+            (guild_id, user_id, won, won, now),
+        )
+        row = _conn.execute(
+            "SELECT current_streak,best_streak FROM infinite_streaks "
+            "WHERE guild_id=? AND user_id=?",
+            (guild_id, user_id),
+        ).fetchone()
+    return int(row[0]), int(row[1])
+
+
+def top_infinite_streaks(guild_id, limit=10):
+    """Return players with at least one correct answer, ordered by best streak."""
+    sql = (
+        "SELECT user_id,current_streak,best_streak FROM infinite_streaks "
+        "WHERE guild_id=? AND best_streak>0 "
+        "ORDER BY best_streak DESC,current_streak DESC,user_id ASC"
+    )
+    params = [guild_id]
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(max(0, int(limit)))
+    return _conn.execute(sql, params).fetchall()
+
+
 # ---- daily leaderboard post tracking ----------------------------------
 def has_daily_leaderboard_post(guild_id, day_key):
     return _conn.execute(
@@ -561,6 +819,23 @@ def mark_daily_leaderboard_post(guild_id, day_key):
         _conn.execute(
             "INSERT OR IGNORE INTO daily_leaderboard_posts(guild_id,day_key,posted_at) VALUES(?,?,?)",
             (guild_id, day_key, int(time.time())),
+        )
+
+
+# ---- weekly leaderboard post tracking ----------------------------------
+def has_weekly_leaderboard_post(guild_id, week_key):
+    return _conn.execute(
+        "SELECT 1 FROM weekly_leaderboard_posts WHERE guild_id=? AND week_key=?",
+        (guild_id, week_key),
+    ).fetchone() is not None
+
+
+def mark_weekly_leaderboard_post(guild_id, week_key):
+    with _conn:
+        _conn.execute(
+            "INSERT OR IGNORE INTO weekly_leaderboard_posts(guild_id,week_key,posted_at) "
+            "VALUES(?,?,?)",
+            (guild_id, week_key, int(time.time())),
         )
 
 

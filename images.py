@@ -236,12 +236,86 @@ async def _file_from_render(path, mode, attempt_index):
     return discord.File(buf, filename=f"{secrets.token_hex(6)}.{extension}")
 
 
-_INFINITE_FILTER_NAMES = ("zoom", "pixelated", "blurred", "inverted")
+_INFINITE_FILTER_NAMES = frozenset(("zoom", "pixelated", "blurred", "inverted"))
+_DEFAULT_INFINITE_FILTER_COMBINATIONS = {
+    "blurred": 30,
+    "blurred+pixelated": 20,
+    "blurred+zoom": 15,
+    "blurred+inverted": 15,
+    "pixelated+inverted": 7,
+    "zoom+pixelated": 5,
+    "zoom+inverted": 3,
+    "blurred+pixelated+inverted": 2,
+    "zoom+blurred+pixelated": 1,
+    "zoom+blurred+inverted": 0.5,
+    "pixelated+blurred+inverted": 1,
+    "zoom+pixelated+blurred+inverted": 0.5,
+}
+
+
+def _infinite_filter_combinations():
+    """Parse and validate the allowlist configured in config.py.
+
+    Mapping keys are plus-separated filter names; mapping values are relative
+    selection weights. Invalid combinations fail closed rather than allowing an
+    accidentally forbidden filter by falling back to a random sample.
+    """
+    configured = getattr(
+        config, "INFINITE_FILTER_COMBINATIONS", _DEFAULT_INFINITE_FILTER_COMBINATIONS
+    )
+    if not isinstance(configured, dict) or not configured:
+        raise ValueError("INFINITE_FILTER_COMBINATIONS must be a non-empty dictionary")
+
+    combinations = []
+    seen = set()
+    for combination_name, raw_weight in configured.items():
+        if not isinstance(combination_name, str):
+            raise TypeError("Infinite filter combination names must be strings")
+        filters = tuple(part.strip().lower() for part in combination_name.split("+"))
+        if not filters or any(not part for part in filters):
+            raise ValueError(f"Invalid filter combination: {combination_name!r}")
+        filter_set = frozenset(filters)
+        if len(filter_set) != len(filters):
+            raise ValueError(f"Duplicate filters in combination: {combination_name!r}")
+        unknown = filter_set - _INFINITE_FILTER_NAMES
+        if unknown:
+            raise ValueError(f"Unknown Infinite filters in {combination_name!r}: {sorted(unknown)}")
+        if len(filter_set) == 1 and filter_set != {"blurred"}:
+            raise ValueError(
+                f"Only blurred may appear alone; invalid combination: {combination_name!r}"
+            )
+        if filter_set in seen:
+            raise ValueError(f"Duplicate Infinite filter combination: {combination_name!r}")
+        try:
+            weight = float(raw_weight)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid weight for {combination_name!r}") from exc
+        if not (weight >= 0 and weight < float("inf")):
+            raise ValueError(f"Weight for {combination_name!r} must be finite and non-negative")
+        if filter_set in seen:
+            raise ValueError(f"Duplicate Infinite filter combination: {combination_name!r}")
+        seen.add(filter_set)
+        if weight == 0:
+            continue  # Keep the combination in config as a disabled option.
+
+        combinations.append((filter_set, weight))
+
+    if not combinations:
+        raise ValueError("No usable Infinite filter combinations are configured")
+    return combinations
 
 
 def random_infinite_effects():
-    """Choose a random non-empty combination of supported visual filters."""
-    chosen = random.sample(_INFINITE_FILTER_NAMES, random.randint(1, len(_INFINITE_FILTER_NAMES)))
+    """Choose only an explicitly allowed filter combination from config.py.
+
+    The configured weights are relative probabilities. For example, a weight
+    of 30 is twice as likely as a weight of 15. Filter strengths are then
+    randomized independently within the selected combination.
+    """
+    combinations = _infinite_filter_combinations()
+    combinations_only, weights = zip(*combinations)
+    chosen = random.choices(combinations_only, weights=weights, k=1)[0]
+
     effects = {}
     if "zoom" in chosen:
         effects["zoom_factor"] = random.choice((1.5, 2.0, 2.5, 3.0, 4.0))
