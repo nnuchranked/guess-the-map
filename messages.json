@@ -89,8 +89,7 @@
       "🙈 Oof, close, but not that one! Less blur for you, {user}. {attempts_left} left!",
       "🤔 Hmm, nope! Let me wipe the lens a bit... {attempts_left} left!",
       "🎈 Nice try, {user}! Squint at this one. {attempts_left} left!",
-      "🧐 Not that one! The picture's getting sharper... {attempts_left} left!",
-      "_'🤔 close but no cigar'_ - Oooooooooooooooooooooopie.  {attempts_left} left!"
+      "🧐 Not that one! The picture's getting sharper... {attempts_left} left!"
     ],
     "wrong_guess_retry": "\n\nUse {guess_command} to try again. The timer for your next attempt starts with this image.",
     "last_try_cannot_pass": "That's your last try, so you can't pass. Take a guess!",
@@ -199,8 +198,8 @@
     "correct_title": "{map_name}",
     "correct_result": "Correct! You solved the **{mode_label}** challenge.\n\nYou earned **{points}** points ({score_detail}).\nYour {mode} total is now **{total}** points.\nTime: **{elapsed:.1f}s**",
     "incorrect_zoom_retry": "That guess was incorrect. You have **{attempts_left}** tries left.\n\nThe image has zoomed out to show more of the map. Submit another answer with **/guesschallenge**.",
-    "incorrect_difficulty": "Incorrect. Try again next time! (Ivory is proud of you anyways)",
-    "incorrect_zoom_final": "Incorrect. You used all {attempts} tries and earned **0** points. Better luck next time!",
+    "incorrect_difficulty": "Incorrect. Better luck next time!",
+    "incorrect_zoom_final": "Incorrect. You used all {attempts} tries for now, Nn wishes you the best!",
     "fixed_reward_detail": "fixed difficulty reward: **{points}**",
     "speed_reward_detail": "**{base_points}** base + **{bonus}** speed bonus",
     "test_success": "A fresh test challenge has been posted.",
@@ -312,11 +311,12 @@
     "weeklyleaderboard_full_parameter": "Show every ranked player instead of only the top 10",
     "stats_description": "Show your player stats or another member’s",
     "stats_member_parameter": "Whose stats to show (defaults to you)",
-    "practice_description": "Replay the last main-game map posted on an earlier UTC date, without points or stats",
+    "practice_description": "Replay the first or second main-game map posted on an earlier UTC date, without points or stats",
     "practice_date_parameter": "Earlier UTC date in YYYY-MM-DD format",
     "guesspractice_description": "Submit a guess for your current unscored practice replay",
     "mychallenge_description": "Reopen the challenge image and current attempt you have already started",
-    "mychallenge_mode_parameter": "Which started challenge to reopen; leave blank when only one is active"
+    "mychallenge_mode_parameter": "Which started challenge to reopen; leave blank when only one is active",
+    "practice_release_parameter": "Which map from that date: the first or second chronological main-game post"
   },
   "admin": {
     "permission_body": "ADMIN: You need the Manage Server permission to use this command."
@@ -357,14 +357,14 @@
     "invalid_date": "Use the date format **YYYY-MM-DD**, for example **2026-11-14**.",
     "past_dates_only": "Practice replay is only available for earlier UTC dates. Use the live game for today’s map.",
     "no_history_title": "No saved map for that date",
-    "no_history": "I do not have a saved main-game map for **{date}**. Older dates are available only when the database still contains a record identifying that day’s map.",
+    "no_history": "I do not have a saved **{release_label}** main-game map for **{date}**. Older dates are available only when the database still contains a record identifying that release.",
     "map_unavailable_title": "Practice map unavailable",
-    "map_unavailable": "The map recorded for **{date}** is no longer in the loaded map list.",
+    "map_unavailable": "The **{release_label}** map recorded for **{date}** is no longer in the loaded map list.",
     "image_unavailable": "I found the map, but could not load its image. Please try again later.",
-    "map_title": "Practice map · {date}",
-    "start_description": "**Unscored replay · UTC date: {date}**\nYou have **{attempts} guesses**. Submit your answer with **/guesspractice**; autocomplete suggestions are available. Each wrong guess reveals a clearer image. This replay awards **no points** and does not affect stats or leaderboards.",
+    "map_title": "Practice map · {date} · {release_label}",
+    "start_description": "**Unscored replay · UTC date: {date} · {release_label}**\nYou have **{attempts} guesses**. Submit your answer with **/guesspractice**; autocomplete suggestions are available. Each wrong guess reveals a clearer image. This replay awards **no points** and does not affect stats or leaderboards.",
     "session_title": "Practice replay",
-    "start_first": "Start a replay with **/guessmap practice date:YYYY-MM-DD** first.",
+    "start_first": "Start a replay with **/guessmap practice date:YYYY-MM-DD release:first** or **release:second** first.",
     "already_complete": "This practice map is already complete. Start another date with **/guessmap practice**.",
     "finished_title": "Practice map completed",
     "empty_guess_title": "Missing guess",
@@ -372,9 +372,13 @@
     "guess_too_long_title": "Guess too long",
     "guess_too_long": "That is too long for a map name (maximum {max_length} characters).",
     "wrong_retry": "Not quite. **{attempts_left} guesses** remaining. The image is clearer now. Submit another answer with **{guess_command}**.",
-    "correct": "Correct! The map was **{map_name}** (UTC date **{date}**). This was an unscored replay; no points or stats were changed.",
-    "out_of_attempts": "That was your last guess. The map was **{map_name}** (UTC date **{date}**). No points or stats were changed.",
+    "correct": "Correct! The map was **{map_name}** ({release_label}, UTC date **{date}**). This was an unscored replay; no points or stats were changed.",
+    "out_of_attempts": "That was your last guess. The map was **{map_name}** ({release_label}, UTC date **{date}**). No points or stats were changed.",
     "autocomplete_no_session": "Start a replay with /guessmap practice first",
-    "autocomplete_finished": "Practice map completed; start another replay"
+    "autocomplete_finished": "Practice map completed; start another replay",
+    "invalid_release_title": "Invalid practice release",
+    "invalid_release": "Choose either the first or second map release.",
+    "first_release_label": "First release",
+    "second_release_label": "Second release"
   }
 }

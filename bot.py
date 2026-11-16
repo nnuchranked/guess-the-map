@@ -10,14 +10,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 import aiohttp
-import discord
-from discord import app_commands
-from discord.ext import tasks
-
 import config
 import db
+import discord
 import images
 from daily import next_reset
+from discord import app_commands
+from discord.ext import tasks
 from maps import build_suggestions, creators_text, is_match, load_maps, suggest
 from messages import Messages
 
@@ -164,6 +163,7 @@ class PracticeSession:
     game_map: dict
     path: str
     utc_date: str
+    release_label: str
     attempts: int = 0
     completed: bool = False
 
@@ -225,6 +225,18 @@ class InfiniteView(discord.ui.View):
             await self.bot.start_infinite(interaction, owner_id=self.owner_id, edit_message=True)
         else:
             await self.bot.skip_infinite(interaction, owner_id=self.owner_id)
+
+
+def _practice_release_record(history, release):
+    """Select the first or second chronological main-game post for a UTC date.
+
+    The database query returns newest first, so reverse it before indexing.
+    """
+    release_index = {"first": 0, "second": 1}.get(release)
+    if release_index is None:
+        return None
+    chronological = list(reversed(history))
+    return chronological[release_index] if len(chronological) > release_index else None
 
 
 class GuessBot(discord.Client):
@@ -1033,8 +1045,21 @@ class GuessBot(discord.Client):
         except discord.HTTPException:
             pass
 
-    async def start_practice(self, interaction, date_text):
-        """Start an unscored replay of the last main-game map posted on a UTC date."""
+    async def start_practice(self, interaction, date_text, release):
+        """Start an unscored replay of the first or second main-game post on a UTC date."""
+        release_labels = {
+            "first": self.t("practice.first_release_label"),
+            "second": self.t("practice.second_release_label"),
+        }
+        release_label = release_labels.get(release)
+        if release_label is None:
+            await self.send_text(
+                interaction, self.t("practice.invalid_release"),
+                title=self.t("practice.invalid_release_title"), ephemeral=True,
+                colour=discord.Colour.orange(),
+            )
+            return
+
         try:
             requested_date = datetime.strptime(date_text, "%Y-%m-%d").date()
             if requested_date.isoformat() != date_text:
@@ -1060,21 +1085,23 @@ class GuessBot(discord.Client):
         start_ms = int(day_start.timestamp() * 1000)
         end_ms = int((day_start + timedelta(days=1)).timestamp() * 1000)
         history = db.main_maps_on_date(interaction.guild_id, start_ms, end_ms)
-        if not history:
+        selected_record = _practice_release_record(history, release)
+        if selected_record is None:
             await self.send_text(
                 interaction,
-                self.t("practice.no_history", date=date_text),
+                self.t("practice.no_history", date=date_text, release_label=release_label),
                 title=self.t("practice.no_history_title"), ephemeral=True, colour=discord.Colour.orange(),
             )
             return
 
-        # When admins posted more than one main map on a date, replay the most
-        # recently posted one. Challenges are excluded by main_map_history.
+        # The first/second choice is chronological. Manual main-game posts also
+        # count; scheduled challenge maps are excluded by main_map_history.
         by_id = {game_map["id"]: game_map for game_map in self.maps}
-        game_map = next((by_id.get(row[1]) for row in history if row[1] in by_id), None)
+        game_map = by_id.get(selected_record[1])
         if game_map is None:
             await self.send_text(
-                interaction, self.t("practice.map_unavailable", date=date_text),
+                interaction,
+                self.t("practice.map_unavailable", date=date_text, release_label=release_label),
                 title=self.t("practice.map_unavailable_title"), ephemeral=True, colour=discord.Colour.red(),
             )
             return
@@ -1094,15 +1121,17 @@ class GuessBot(discord.Client):
 
         session = PracticeSession(
             interaction.guild_id, interaction.user.id, interaction.channel_id,
-            game_map, path, date_text,
+            game_map, path, date_text, release_label,
         )
         self.practice_sessions[(interaction.guild_id, interaction.user.id)] = session
         description = self.t(
-            "practice.start_description", date=date_text, attempts=config.MAX_ATTEMPTS,
+            "practice.start_description", date=date_text, release_label=release_label,
+            attempts=config.MAX_ATTEMPTS,
         )
         try:
             payload = await self.map_message(
-                description, path, 0, title=self.t("practice.map_title", date=date_text),
+                description, path, 0,
+                title=self.t("practice.map_title", date=date_text, release_label=release_label),
             )
             await interaction.followup.send(ephemeral=True, **payload)
         except (discord.HTTPException, OSError, ValueError) as exc:
@@ -1148,7 +1177,7 @@ class GuessBot(discord.Client):
         if correct:
             session.completed = True
             text_out = self.t(
-                "practice.correct", date=session.utc_date,
+                "practice.correct", date=session.utc_date, release_label=session.release_label,
                 map_name=session.game_map["name"],
             )
             await self.reveal(
@@ -1165,7 +1194,10 @@ class GuessBot(discord.Client):
             await interaction.response.defer(ephemeral=True, thinking=True)
             payload = await self.map_message(
                 description, session.path, session.attempts,
-                title=self.t("practice.map_title", date=session.utc_date),
+                title=self.t(
+                    "practice.map_title", date=session.utc_date,
+                    release_label=session.release_label,
+                ),
             )
             await interaction.followup.send(ephemeral=True, **payload)
             return
@@ -1173,7 +1205,7 @@ class GuessBot(discord.Client):
         session.completed = True
         text_out = self.t(
             "practice.out_of_attempts", map_name=session.game_map["name"],
-            date=session.utc_date,
+            date=session.utc_date, release_label=session.release_label,
         )
         await self.reveal(
             interaction.channel, session, text_out, interaction=interaction, ephemeral=True,
@@ -1914,7 +1946,7 @@ class GuessBot(discord.Client):
             log.warning("Pass response failed: %s", e)
 
     async def handle_guess(self, interaction, text):
-        """Process a /guess submission (ephemeral only)"""
+        """Process a /guess submission. All feedback and map images are private."""
         if text in (ALREADY_FINISHED_CHOICE, NO_ACTIVE_MAP_CHOICE, START_FIRST_CHOICE):
             await self._player_state(interaction)
             return
@@ -1933,8 +1965,8 @@ class GuessBot(discord.Client):
             return
 
         uid = interaction.user.id
-        correct = is_match(text, rnd.game_map) # match ignoring case and symbols
-        rnd.used[uid] = used + 1                      # count before calling await
+        correct = is_match(text, rnd.game_map)
+        rnd.used[uid] = used + 1                      # count it before any await (no races)
         if correct:
             rnd.solved.add(uid)
         db.set_attempt(rnd.channel_id, uid, used + 1, correct)
@@ -1964,16 +1996,16 @@ class GuessBot(discord.Client):
                     total=f"{total:g}", map_name=map_name,
                 )
                 msg += self.t("main.speed_bonus_line", bonus=f"{bonus:g}", elapsed=elapsed)
-                # reveal only to the guesser
+                # the answer is shown ONLY to the person who guessed it
                 await self.reveal(interaction.channel, rnd, msg, interaction=interaction, ephemeral=True)
                 await self._announce(interaction.channel, name, used + 1, f"{points:g}")
                 return
 
             left = config.MAX_ATTEMPTS - (used + 1)
             if left > 0:
-                await self._show_clearer(interaction, rnd, used + 1)      # reduce blur on subsequent tries
+                await self._show_clearer(interaction, rnd, used + 1)      # less blur each try
             else:
-                # no more guesses, we reveal the map
+                # final miss: reveal the map, but only to this player
                 msg = self.t("main.out_of_attempts", user=name, map_name=map_name)
                 await self.reveal(interaction.channel, rnd, msg, interaction=interaction, ephemeral=True)
         except discord.HTTPException as e:
@@ -2403,9 +2435,16 @@ def make_group(bot):
         await bot.begin_guessing(interaction)
 
     @group.command(name="practice", description=bot.t("commands.practice_description"))
-    @app_commands.describe(date=bot.t("commands.practice_date_parameter"))
-    async def practice(interaction: discord.Interaction, date: str):
-        await bot.start_practice(interaction, date)
+    @app_commands.choices(release=[
+        app_commands.Choice(name=bot.t("practice.first_release_label"), value="first"),
+        app_commands.Choice(name=bot.t("practice.second_release_label"), value="second"),
+    ])
+    @app_commands.describe(
+        date=bot.t("commands.practice_date_parameter"),
+        release=bot.t("commands.practice_release_parameter"),
+    )
+    async def practice(interaction: discord.Interaction, date: str, release: str):
+        await bot.start_practice(interaction, date, release)
 
     @group.command(name="challenge", description=bot.t("commands.challenge_description"))
     async def challenge(interaction: discord.Interaction):
