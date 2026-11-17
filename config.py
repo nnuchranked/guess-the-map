@@ -15,7 +15,7 @@ RECENT_MAPS_MEMORY = 50               # avoid repeating recently used maps acros
 FUZZY_THRESHOLD = 0.85                # 1.0 = exact only; lower = more typo-tolerant
 MAX_GUESS_LENGTH = 256                # allows long map + creator combinations
 AUTOCOMPLETE_MIN_CHARS = 2            # start suggestions after this many typed characters
-AUTOCOMPLETE_MAX_RESULTS = 10         # Discord's maximum is 25
+AUTOCOMPLETE_MAX_RESULTS = 25         # Discord allows up to 25 suggestions
 
 # --- Images / files -----------------------------------------------------
 MAX_IMAGE_WIDTH = 800                 # cached images are downscaled to this width
@@ -87,59 +87,3 @@ assert SPEED_BONUS_CUTOFF_SECONDS > 0, "SPEED_BONUS_CUTOFF_SECONDS must be posit
 assert all(width >= 2 for width in PIXELATION_WIDTHS), "Pixelation widths must be at least 2"
 assert all(factor >= 1.0 for factor in ZOOM_OUT_FACTORS), "Zoom-out factors must be >= 1.0"
 assert MAP_INTERVAL_HOURS * 60 >= 1, "MAP_INTERVAL_HOURS must be at least 1 minute (1 / 60)"
-
-# --- Infinite mode filter combinations -----------------------------------
-# Only combinations listed here can appear. Weights are relative, they dont add to 100
-
-INFINITE_FILTER_COMBINATIONS = {
-    "blurred": 18,
-    "blurred+inverted": 10,
-    "blurred+zoom": 13,
-    "pixelated+inverted": 16,
-    "zoom+pixelated": 12,
-    "blurred+pixelated+inverted": 8,
-    "zoom+inverted": 12,
-    "blurred+pixelated": 5,
-    "zoom+blurred+pixelated": 3,
-    "zoom+blurred+inverted": 1.5,
-    "zoom+pixelated+blurred+inverted": 3,
-}
-
-# --- Weekly main-game leaderboard ---------------------------------------
-# In ISO Format from a UTC reference
-WEEKLY_LEADERBOARD_DAY_UTC = 0       # Monday=0 ... Sunday=6
-WEEKLY_LEADERBOARD_HOUR_UTC = 0
-WEEKLY_LEADERBOARD_MINUTE_UTC = 5
-
-assert 0 <= WEEKLY_LEADERBOARD_DAY_UTC <= 6
-assert 0 <= WEEKLY_LEADERBOARD_HOUR_UTC <= 23
-assert 0 <= WEEKLY_LEADERBOARD_MINUTE_UTC <= 59
-
-
-_ALLOWED_INFINITE_FILTERS = {"zoom", "pixelated", "blurred", "inverted"}
-assert INFINITE_FILTER_COMBINATIONS, "INFINITE_FILTER_COMBINATIONS cannot be empty"
-_seen_infinite_combinations = set()
-_seen_infinite_filter_sets = set()
-for _combo_name, _combo_weight in INFINITE_FILTER_COMBINATIONS.items():
-    assert isinstance(_combo_name, str), "Infinite filter combination names must be strings"
-    _combo_filters = tuple(part.strip().lower() for part in _combo_name.split("+"))
-    assert _combo_filters and all(_combo_filters), f"Invalid empty filter in {_combo_name!r}"
-    assert len(set(_combo_filters)) == len(_combo_filters), f"Duplicate filter in {_combo_name!r}"
-    assert set(_combo_filters) <= _ALLOWED_INFINITE_FILTERS, f"Unknown filter in {_combo_name!r}"
-    assert len(_combo_filters) > 1 or _combo_filters == ("blurred",), (
-        f"Pixelated, zoom, and inverted cannot appear alone: {_combo_name!r}"
-    )
-    assert _combo_name not in _seen_infinite_combinations, f"Duplicate combination: {_combo_name!r}"
-    assert frozenset(_combo_filters) not in _seen_infinite_filter_sets, (
-        f"Duplicate filter set (order does not matter): {_combo_name!r}"
-    )
-    _weight_value = float(_combo_weight)
-    assert 0 <= _weight_value < float("inf"), (
-        f"Filter combination weight must be finite and non-negative: {_combo_name!r}"
-    )
-    _seen_infinite_combinations.add(_combo_name)
-    _seen_infinite_filter_sets.add(frozenset(_combo_filters))
-assert any(float(weight) > 0 for weight in INFINITE_FILTER_COMBINATIONS.values()), (
-    "At least one Infinite filter combination must have a positive weight"
-)
-del _combo_name, _combo_weight, _combo_filters, _weight_value, _seen_infinite_combinations, _seen_infinite_filter_sets, _ALLOWED_INFINITE_FILTERS

@@ -238,43 +238,93 @@ async def load_maps(session):
 
 
 def build_suggestions(maps):
-    """One autocomplete suggestion per map, including its creators."""
+    """Build searchable suggestions with separate title and creator fields.
+
+    Keeping these fields separate lets creator searches surface maps whose titles
+    contain no searchable letters (for example, a title consisting only of ▓).
+    """
     seen, index = set(), []
 
-    for m in maps:
-        authors = _creator_names(m)
-
+    for game_map in maps:
+        authors = _creator_names(game_map)
+        title = str(game_map.get("name") or "").strip()
         candidate = (
-            f"{m['name']} | by {', '.join(authors)}"
+            f"{title} | by {', '.join(authors)}"
             if authors
-            else m["name"]
-        )
+            else title
+        )[:100]
 
-        candidate = candidate[:100]
+        # Deduplicate by the visible candidate, not its normalized form. Two
+        # different symbol-only titles can normalize identically while still
+        # being distinct, selectable map names.
+        visible_key = candidate.casefold()
+        if not candidate or visible_key in seen:
+            continue
+        seen.add(visible_key)
+
         key = normalize(candidate)
-
-        if not key or key in seen:
+        title_key = normalize(title)
+        creator_keys = tuple(dict.fromkeys(
+            normalized for author in authors if (normalized := normalize(author))
+        ))
+        if not key and not title_key and not creator_keys:
             continue
 
-        seen.add(key)
-        index.append((candidate, key))
+        index.append((candidate, key, title_key, creator_keys))
 
     index.sort(key=lambda item: item[0].casefold())
     return index
 
 
 def suggest(index, current, limit):
-    """Names starting with what was typed come first, then names that merely contain it."""
+    """Return relevant map suggestions, prioritizing creator-only matches for symbol titles."""
     q = normalize(current)
     if len(q) < config.AUTOCOMPLETE_MIN_CHARS:
         return []
-    starts, contains = [], []
-    for name, norm in index:
+
+    title_starts, title_contains = [], []
+    unsearchable_title_creator_matches = []
+    creator_matches = []
+    combined_starts, combined_contains = [], []
+
+    for item in index:
+        # Accept legacy two-field indexes as well as the richer index generated
+        # by build_suggestions above.
+        name, norm = item[0], item[1]
+        if len(item) >= 4:
+            title_norm, creator_norms = item[2], item[3]
+        else:
+            title_norm, creator_norms = normalize(name.split(" | by ", 1)[0]), ()
+
+        if title_norm.startswith(q):
+            title_starts.append(name)
+        elif title_norm and q in title_norm:
+            title_contains.append(name)
+
+        creator_hit = any(author.startswith(q) or q in author for author in creator_norms)
+        if creator_hit:
+            if not title_norm:
+                # if its unsearchable, put it ahead
+                unsearchable_title_creator_matches.append(name)
+            else:
+                creator_matches.append(name)
+
         if norm.startswith(q):
-            starts.append(name)
+            combined_starts.append(name)
         elif q in norm:
-            contains.append(name)
-    return (starts + contains)[:limit]
+            combined_contains.append(name)
+
+    ordered = (
+        title_starts
+        + title_contains
+        + unsearchable_title_creator_matches
+        + creator_matches
+        + combined_starts
+        + combined_contains
+    )
+
+    unique = list(dict.fromkeys(ordered))
+    return unique[:max(0, int(limit))]
 
 
 def is_match(guess, game_map):
@@ -301,12 +351,17 @@ def is_match(guess, game_map):
 
     guess_suffix = _numbered_suffix(guess)
     for cand, cand_suffix in fuzzy_answers.items():
+        # A missing, added, or changed trailing number/Roman numeral is meaningful.
+        # Do not allow typo tolerance to erase that distinction 
         if guess_suffix != cand_suffix and (guess_suffix is not None or cand_suffix is not None):
             continue
 
+        # Prefix differences commonly indicate a distinct sequel/sub-map name.
+        # Typos elsewhere are still handled by the fuzzy comparison below.
         if g.startswith(cand) or cand.startswith(g):
             continue
 
+        # Fuzzy matching only for longer names, so short names can't be guessed by accident.
         if len(cand) > 5 and abs(len(g) - len(cand)) <= 3:
             sm = difflib.SequenceMatcher(None, g, cand)
             if (
