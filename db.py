@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 import time
@@ -43,6 +44,16 @@ def init():
             guild_id INTEGER NOT NULL, map_id TEXT NOT NULL, played_at INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS infinite_recent_idx
             ON infinite_recent(guild_id, played_at);
+
+        -- The current Infinite map/effects are per player and survive process restarts.
+        CREATE TABLE IF NOT EXISTS infinite_sessions(
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            map_id TEXT NOT NULL,
+            effects_json TEXT NOT NULL,
+            guessed INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY(guild_id, user_id));
 
         CREATE TABLE IF NOT EXISTS player_map_stats(
             guild_id INTEGER NOT NULL,
@@ -1069,3 +1080,73 @@ def infinite_recent_ids(guild_id, limit):
         (guild_id, max(0, int(limit))),
     ).fetchall()
     return [row[0] for row in rows]
+
+
+def save_infinite_session(guild_id, user_id, map_id, effects, guessed=False):
+    """Persist one player's current Infinite map and its exact random effects."""
+    effects_json = json.dumps(effects, separators=(",", ":"), sort_keys=True)
+    with _conn:
+        _conn.execute(
+            "INSERT INTO infinite_sessions "
+            "(guild_id,user_id,map_id,effects_json,guessed,updated_at) VALUES(?,?,?,?,?,?) "
+            "ON CONFLICT(guild_id,user_id) DO UPDATE SET "
+            "map_id=excluded.map_id,effects_json=excluded.effects_json, "
+            "guessed=excluded.guessed,updated_at=excluded.updated_at",
+            (guild_id, user_id, str(map_id), effects_json, int(bool(guessed)), int(time.time())),
+        )
+
+
+def get_infinite_session(guild_id, user_id):
+    """Return (map_id, effects, guessed) for the player's current Infinite session."""
+    row = _conn.execute(
+        "SELECT map_id,effects_json,guessed FROM infinite_sessions "
+        "WHERE guild_id=? AND user_id=?",
+        (guild_id, user_id),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        effects = json.loads(row[1])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Saved Infinite filter settings are invalid") from exc
+    if not isinstance(effects, dict):
+        raise TypeError("Saved Infinite filter settings are not an object")
+    return str(row[0]), effects, bool(row[2])
+
+
+def complete_infinite_session(guild_id, user_id, map_id, correct):
+    """Atomically lock the current map as completed and update the player's streak once.
+
+    Returns the new (current_streak, best_streak), or None if this map was
+    already completed/replaced. This prevents duplicate results after retries.
+    """
+    won = int(bool(correct))
+    now = int(time.time())
+    with _conn:
+        cursor = _conn.execute(
+            "UPDATE infinite_sessions SET guessed=1,updated_at=? "
+            "WHERE guild_id=? AND user_id=? AND map_id=? AND guessed=0",
+            (now, guild_id, user_id, str(map_id)),
+        )
+        if cursor.rowcount != 1:
+            return None
+
+        _conn.execute(
+            "INSERT INTO infinite_streaks "
+            "(guild_id,user_id,current_streak,best_streak,updated_at) "
+            "VALUES(?,?,?,?,?) "
+            "ON CONFLICT(guild_id,user_id) DO UPDATE SET "
+            "current_streak=CASE WHEN excluded.current_streak=1 "
+            "THEN infinite_streaks.current_streak+1 ELSE 0 END, "
+            "best_streak=MAX(infinite_streaks.best_streak, "
+            "CASE WHEN excluded.current_streak=1 "
+            "THEN infinite_streaks.current_streak+1 ELSE 0 END), "
+            "updated_at=excluded.updated_at",
+            (guild_id, user_id, won, won, now),
+        )
+        row = _conn.execute(
+            "SELECT current_streak,best_streak FROM infinite_streaks "
+            "WHERE guild_id=? AND user_id=?",
+            (guild_id, user_id),
+        ).fetchone()
+    return int(row[0]), int(row[1])

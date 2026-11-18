@@ -304,7 +304,6 @@ def suggest(index, current, limit):
         creator_hit = any(author.startswith(q) or q in author for author in creator_norms)
         if creator_hit:
             if not title_norm:
-                # if its unsearchable, put it ahead
                 unsearchable_title_creator_matches.append(name)
             else:
                 creator_matches.append(name)
@@ -323,6 +322,8 @@ def suggest(index, current, limit):
         + combined_contains
     )
 
+    # A candidate can match both its title and creator. Keep only its first,
+    # highest-priority occurrence before applying Discord's result limit.
     unique = list(dict.fromkeys(ordered))
     return unique[:max(0, int(limit))]
 
@@ -352,7 +353,6 @@ def is_match(guess, game_map):
     guess_suffix = _numbered_suffix(guess)
     for cand, cand_suffix in fuzzy_answers.items():
         # A missing, added, or changed trailing number/Roman numeral is meaningful.
-        # Do not allow typo tolerance to erase that distinction 
         if guess_suffix != cand_suffix and (guess_suffix is not None or cand_suffix is not None):
             continue
 

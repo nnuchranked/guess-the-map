@@ -10,13 +10,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 import aiohttp
-import config
-import db
 import discord
-import images
-from daily import next_reset
 from discord import app_commands
 from discord.ext import tasks
+
+import config
+import db
+import images
+from daily import next_reset
 from maps import build_suggestions, creators_text, is_match, load_maps, suggest
 from messages import Messages
 
@@ -259,6 +260,7 @@ class GuessBot(discord.Client):
         self.mode_timers = {}                         # (guild, challenge key, mode, user) -> monotonic time
         self.mode_starting = set()                    # prevents duplicate start-button requests
         self.infinite_sessions = {}                    # (guild_id, user_id) -> unscored InfiniteSession
+        self.infinite_locks = {}                       # (guild_id, user_id) -> asyncio.Lock
         self.practice_sessions = {}                    # (guild_id, user_id) -> unscored PracticeSession
 
     # ---------------------------------------------------------------- setup
@@ -776,7 +778,36 @@ class GuessBot(discord.Client):
         return self.t("infinite.streak_status", current=current, best=best)
 
     async def start_infinite(self, interaction, owner_id=None, edit_message=False):
-        """Start or advance one private, unscored random-filter map."""
+        """Start, advance, or reopen this player's persistent Infinite session."""
+        key = (interaction.guild_id, interaction.user.id)
+        lock = self.infinite_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            await self._start_infinite_locked(interaction, owner_id, edit_message)
+
+    async def _restore_infinite_session(self, guild_id, user_id):
+        """Rebuild a player's current Infinite session from its saved map and effects."""
+        saved = db.get_infinite_session(guild_id, user_id)
+        if saved is None:
+            return None
+
+        map_id, effects, guessed = saved
+        game_map = next((item for item in self.maps if str(item.get("id")) == map_id), None)
+        if game_map is None:
+            raise ValueError(f"Saved Infinite map {map_id} is no longer in the loaded map list")
+
+        path = await images.ensure_image(self.session, game_map)
+        if not path:
+            raise OSError(f"Could not restore the saved Infinite map image: {map_id}")
+
+        labels = images.describe_infinite_effects(effects, self.t)
+        session = InfiniteSession(
+            guild_id, user_id, game_map, path, effects, labels, guessed=guessed,
+        )
+        self.infinite_sessions[(guild_id, user_id)] = session
+        return session
+
+    async def _start_infinite_locked(self, interaction, owner_id=None, edit_message=False):
+        """Internal Infinite start/advance operation; caller holds the player's lock."""
         uid = interaction.user.id
         if owner_id is not None and uid != owner_id:
             await self.send_text(
@@ -787,6 +818,20 @@ class GuessBot(discord.Client):
 
         key = (interaction.guild_id, uid)
         previous = self.infinite_sessions.get(key)
+        if previous is None:
+            try:
+                previous = await self._restore_infinite_session(interaction.guild_id, uid)
+            except (aiohttp.ClientError, OSError, ValueError) as exc:
+                # Never silently replace a saved map with a random one. A failed
+                # restore must leave the persisted selection intact for retry.
+                log.warning("Could not restore Infinite session for user %s: %s", uid, exc)
+                await self.send_text(
+                    interaction, self.t("infinite.generation_failed"),
+                    title=self.t("infinite.generation_failed_title"), ephemeral=True,
+                    colour=discord.Colour.red(),
+                )
+                return
+
         if previous is not None and not previous.guessed and not edit_message:
             # Infinite has no speed timer, but it must retain the same map and
             # random effects when a user asks to view the current session again.
@@ -859,6 +904,15 @@ class GuessBot(discord.Client):
             game_map, path = picked
             effects = images.random_infinite_effects()
             labels = images.describe_infinite_effects(effects, self.t)
+            session = InfiniteSession(
+                interaction.guild_id, uid, game_map, path, effects, labels
+            )
+            # Commit the selection before revealing it. If the app or bot closes,
+            # the next /guessmap infinite restores this exact map and filter roll.
+            db.save_infinite_session(
+                interaction.guild_id, uid, game_map["id"], effects, guessed=False,
+            )
+            self.infinite_sessions[key] = session
             file = await images.infinite_file(path, effects)
             embed = discord.Embed(
                 title=self.t("infinite.title"),
@@ -882,10 +936,6 @@ class GuessBot(discord.Client):
             )
             embed.set_image(url=f"attachment://{file.filename}")
             embed.set_footer(text=self.t("infinite.footer"))
-            session = InfiniteSession(
-                interaction.guild_id, uid, game_map, path, effects, labels
-            )
-            self.infinite_sessions[key] = session
             view = InfiniteView(self, uid, completed=False, session=session)
             if edit_message:
                 session.message = await interaction.edit_original_response(
@@ -924,10 +974,19 @@ class GuessBot(discord.Client):
             return
 
         # A skipped map breaks a consecutive-correct streak, but does not affect the best.
-        session.guessed = True
-        current_streak, best_streak = db.record_infinite_result(
-            interaction.guild_id, uid, correct=False
+        result = db.complete_infinite_session(
+            interaction.guild_id, uid, session.game_map["id"], correct=False,
         )
+        if result is None:
+            session.guessed = True
+            await self.send_text(
+                interaction, self.t("infinite.already_complete", next_button=self.t("infinite.button_next")),
+                title=self.t("infinite.already_complete_title"), ephemeral=True,
+                colour=discord.Colour.orange(),
+            )
+            return
+        session.guessed = True
+        current_streak, best_streak = result
         streak_status = self.t(
             "infinite.streak_status", current=current_streak, best=best_streak
         )
@@ -992,12 +1051,22 @@ class GuessBot(discord.Client):
             )
             return
 
-        # Consume the one guess before sending any response, preventing concurrent submissions.
-        session.guessed = True
+        # Consume the one guess and update the streak atomically in SQLite, so a
+        # restart or repeated interaction cannot make the same map count twice.
         correct = is_match(answer, session.game_map)
-        current_streak, best_streak = db.record_infinite_result(
-            interaction.guild_id, interaction.user.id, correct=correct
+        result = db.complete_infinite_session(
+            interaction.guild_id, interaction.user.id, session.game_map["id"], correct=correct,
         )
+        if result is None:
+            session.guessed = True
+            await self.send_text(
+                interaction, self.t("infinite.already_complete", next_button=self.t("infinite.button_next")),
+                title=self.t("infinite.already_complete_title"), ephemeral=True,
+                colour=discord.Colour.orange(),
+            )
+            return
+        session.guessed = True
+        current_streak, best_streak = result
         streak_status = self.t(
             "infinite.streak_status", current=current_streak, best=best_streak
         )
