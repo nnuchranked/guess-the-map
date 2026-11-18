@@ -266,8 +266,11 @@ def _infinite_filter_combinations():
     if not isinstance(configured, dict) or not configured:
         raise ValueError("INFINITE_FILTER_COMBINATIONS must be a non-empty dictionary")
 
-    combinations = []
-    seen = set()
+    # Normalize each combination to a frozenset, since filter order does not
+    # change the resulting image. If the same set is configured in a different
+    # order (for example, "blurred+pixelated" and "pixelated+blurred"), merge
+    # the entries and add their weights instead of rejecting the whole mode.
+    weights_by_filter_set = {}
     for combination_name, raw_weight in configured.items():
         if not isinstance(combination_name, str):
             raise TypeError("Infinite filter combination names must be strings")
@@ -284,22 +287,20 @@ def _infinite_filter_combinations():
             raise ValueError(
                 f"Only blurred may appear alone; invalid combination: {combination_name!r}"
             )
-        if filter_set in seen:
-            raise ValueError(f"Duplicate Infinite filter combination: {combination_name!r}")
         try:
             weight = float(raw_weight)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Invalid weight for {combination_name!r}") from exc
         if not (weight >= 0 and weight < float("inf")):
             raise ValueError(f"Weight for {combination_name!r} must be finite and non-negative")
-        if filter_set in seen:
-            raise ValueError(f"Duplicate Infinite filter combination: {combination_name!r}")
-        seen.add(filter_set)
         if weight == 0:
-            continue  # Keep the combination in config as a disabled option.
+            continue  # Keep the combination disabled; it contributes no weight.
 
-        combinations.append((filter_set, weight))
+        weights_by_filter_set[filter_set] = (
+            weights_by_filter_set.get(filter_set, 0.0) + weight
+        )
 
+    combinations = list(weights_by_filter_set.items())
     if not combinations:
         raise ValueError("No usable Infinite filter combinations are configured")
     return combinations
