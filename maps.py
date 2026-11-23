@@ -213,6 +213,10 @@ def _save(raw):
     os.replace(tmp, config.MAPS_FALLBACK_FILE)
 
 
+def _parse_saved():
+    return parse_maps(_read_saved())
+
+
 async def load_maps(session):
     """Fetch from the API and save a copy; if the API fails, use the saved copy."""
     try:
@@ -223,12 +227,12 @@ async def load_maps(session):
         ) as r:
             r.raise_for_status()
             raw = await r.json(content_type=None)
-        maps = parse_maps(raw)
+        maps = await asyncio.to_thread(parse_maps, raw)    # CPU-heavy: keep it off the event loop
         if not maps:
             raise ValueError("API returned no playable maps")
     except (TimeoutError, aiohttp.ClientError, ValueError) as e:
         log.warning("Couldn't fetch %s (%s); using the saved copy", config.MAPS_URL, e)
-        return parse_maps(await asyncio.to_thread(_read_saved))
+        return await asyncio.to_thread(_parse_saved)
 
     try:
         await asyncio.to_thread(_save, raw)

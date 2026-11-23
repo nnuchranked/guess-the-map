@@ -5,6 +5,7 @@ import logging
 import os
 import random
 import secrets
+from collections import OrderedDict
 
 import aiohttp
 import discord
@@ -222,18 +223,160 @@ def _render_mode(path, mode, attempt_index):
     raise ValueError(f"Unsupported game mode: {mode}")
 
 
-async def _file_from_render(path, mode, attempt_index):
-    result = await asyncio.to_thread(_render_mode, path, mode, attempt_index)
+# --------------------------------------------------------------------------
+# Encoded-image cache
+#
+# The picture a player sees depends only on (map file, mode, attempt), never on
+# the player, so each variant is rendered and encoded once and the bytes are
+# reused for every click. Rendering/encoding always runs in a worker thread and
+# concurrent requests for the same variant share one render.
+#
+# Format choice: pixelated (easy) images are blocky, so PNG is smaller there.
+# Everything else (blurred / zoomed / inverted) is smooth, where PNG is huge and
+# slow to encode; those are sent as high-quality JPEG instead.
+# --------------------------------------------------------------------------
+_JPEG_QUALITY_NORMAL = 80      # the original blur output (unchanged)
+_JPEG_QUALITY_SMOOTH = 90      # hard / impossible / zoom / infinite (4:4:4 chroma)
+
+
+class _LRU:
+    def __init__(self, max_items):
+        self._items = OrderedDict()
+        self._max = max_items
+
+    def get(self, key):
+        value = self._items.get(key)
+        if value is not None:
+            self._items.move_to_end(key)
+        return value
+
+    def put(self, key, value):
+        self._items[key] = value
+        self._items.move_to_end(key)
+        while len(self._items) > self._max:
+            self._items.popitem(last=False)
+
+
+_round_cache = _LRU(256)       # daily / challenge / practice variants
+_infinite_cache = _LRU(64)     # random Infinite variants (kept apart so they can't evict the above)
+_inflight = {}                 # key -> asyncio.Task, so simultaneous clicks share one render
+
+
+def _stamp(path):
+    """Cheap change detector so a replaced cache file is never served stale."""
+    return os.stat(path).st_mtime_ns
+
+
+def _encode_jpeg(im, quality, *, full_chroma=False):
     buf = io.BytesIO()
-    if mode == "normal":
-        # Keep the exact original blur's JPEG output characteristics.
-        result.save(buf, "JPEG", quality=80)
-        extension = "jpg"
+    if full_chroma:
+        im.save(buf, "JPEG", quality=quality, subsampling=0)
     else:
-        result.save(buf, "PNG", optimize=True)
-        extension = "png"
-    buf.seek(0)
-    return discord.File(buf, filename=f"{secrets.token_hex(6)}.{extension}")
+        im.save(buf, "JPEG", quality=quality)
+    return buf.getvalue(), "jpg"
+
+
+def _encode_png(im):
+    buf = io.BytesIO()
+    im.save(buf, "PNG")        # default compression; optimize=True cost ~10x CPU for tiny gains
+    return buf.getvalue(), "png"
+
+
+def _attempt_count(mode):
+    if mode == "easy":
+        return len(getattr(config, "PIXELATION_WIDTHS", (28, 56, 112)))
+    if mode == "zoom":
+        return len(getattr(config, "ZOOM_OUT_FACTORS", (4.0, 2.5, 1.0)))
+    return len(config.BLUR_LEVELS)
+
+
+def _norm_attempt(mode, attempt_index):
+    """Clamp like the renderers do, so equivalent indexes share one cache entry."""
+    return max(0, min(int(attempt_index), _attempt_count(mode) - 1))
+
+
+def _build_mode(path, mode, attempt_index):
+    """Render + encode one variant. Runs in a worker thread."""
+    result = _render_mode(path, mode, attempt_index)
+    if mode == "normal":
+        return _encode_jpeg(result, _JPEG_QUALITY_NORMAL)
+    if mode == "easy":
+        return _encode_png(result)
+    return _encode_jpeg(result, _JPEG_QUALITY_SMOOTH, full_chroma=True)
+
+
+def _build_infinite(path, effects):
+    result = _render_infinite(path, effects)
+    if "pixel_width" in effects:
+        return _encode_png(result)
+    return _encode_jpeg(result, _JPEG_QUALITY_SMOOTH, full_chroma=True)
+
+
+async def _cached_bytes(cache, key, build):
+    hit = cache.get(key)
+    if hit is not None:
+        return hit
+    task = _inflight.get(key)
+    if task is None:
+        task = asyncio.ensure_future(asyncio.to_thread(build))
+        _inflight[key] = task
+
+        def _finished(done, key=key):
+            _inflight.pop(key, None)
+            if not done.cancelled() and done.exception() is None:
+                cache.put(key, done.result())
+
+        task.add_done_callback(_finished)
+    # shield: one cancelled interaction must not cancel the render others are awaiting
+    return await asyncio.shield(task)
+
+
+def _as_file(encoded):
+    data, extension = encoded
+    return discord.File(io.BytesIO(data), filename=f"{secrets.token_hex(6)}.{extension}")
+
+
+def _mode_key(path, mode, attempt_index):
+    return (path, _stamp(path), mode, _norm_attempt(mode, attempt_index))
+
+
+def cached_mode_file(path, mode, attempt_index):
+    """Return a ready discord.File if this variant is already rendered, else None. Never blocks."""
+    try:
+        hit = _round_cache.get(_mode_key(path, mode, attempt_index))
+    except OSError:
+        return None
+    return _as_file(hit) if hit is not None else None
+
+
+def cached_blurred_file(path, level_index):
+    return cached_mode_file(path, "normal", level_index)
+
+
+async def mode_file(path, mode, attempt_index):
+    """Return an image for normal/easy/hard/impossible/zoom (rendered once, then reused)."""
+    key = _mode_key(path, mode, attempt_index)
+    encoded = await _cached_bytes(
+        _round_cache, key, lambda: _build_mode(path, mode, int(attempt_index))
+    )
+    return _as_file(encoded)
+
+
+async def blurred_file(path, level_index):
+    """Return a discord.File using the original blur algorithm (JPEG q80)."""
+    return await mode_file(path, "normal", level_index)
+
+
+async def prewarm(path, variants):
+    """Render (mode, attempt_index) variants ahead of the first click. Failures are non-fatal."""
+    for mode, attempt_index in variants:
+        try:
+            await _cached_bytes(
+                _round_cache, _mode_key(path, mode, attempt_index),
+                lambda m=mode, a=attempt_index: _build_mode(path, m, int(a)),
+            )
+        except Exception as exc:  # noqa: BLE001 - warming is best-effort
+            log.warning("Prewarm failed for %s/%s/%s: %s", path, mode, attempt_index, exc)
 
 
 _INFINITE_FILTER_NAMES = frozenset(("zoom", "pixelated", "blurred", "inverted"))
@@ -377,19 +520,7 @@ def _render_infinite(path, effects):
 
 async def infinite_file(path, effects):
     """Render one random-filter map. This has no scoring or persistence side effects."""
-    result = await asyncio.to_thread(_render_infinite, path, dict(effects))
-    buf = io.BytesIO()
-    result.save(buf, "PNG", optimize=True)
-    buf.seek(0)
-    return discord.File(buf, filename=f"{secrets.token_hex(6)}.png")
-
-
-async def blurred_file(path, level_index):
-    """Return a discord.File using the restored original blur algorithm."""
-    buf = await asyncio.to_thread(_blur, path, level_index)
-    return discord.File(buf, filename=f"{secrets.token_hex(6)}.jpg")
-
-
-async def mode_file(path, mode, attempt_index):
-    """Return an image for easy/normal/hard/impossible/zoom challenges."""
-    return await _file_from_render(path, mode, attempt_index)
+    effects = dict(effects)
+    key = (path, _stamp(path), "infinite", tuple(sorted(effects.items())))
+    encoded = await _cached_bytes(_infinite_cache, key, lambda: _build_infinite(path, effects))
+    return _as_file(encoded)

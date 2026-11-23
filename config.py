@@ -5,7 +5,7 @@ BLUR_LEVELS = [0.07, 0.05, 0.03]      # blur radius as a fraction of reference w
 BLUR_MULTIPLIER = 1.0                 # scales all blur levels at once
 BLUR_REFERENCE_WIDTH = 800
 MAP_INTERVAL_HOURS = 12               # hours between main daily maps
-DAILY_RESET_HOUR_UTC = 0              # schedule anchor hour (UTC)
+DAILY_RESET_HOUR_UTC = 7              # schedule anchor hour (UTC)
 ANNOUNCE_CORRECT = True               # announce correct solvers without revealing the answer
 ONLY_TOURNAMENT_LEGAL = True          # only use maps with tournament_legal == true
 EXCLUDE_UNDER_REVIEW = True           # skip maps flagged under_review

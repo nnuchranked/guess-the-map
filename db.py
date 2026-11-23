@@ -14,6 +14,10 @@ def init():
     os.makedirs(os.path.dirname(config.DB_FILE) or ".", exist_ok=True)
     _conn = sqlite3.connect(config.DB_FILE)
     _conn.execute("PRAGMA journal_mode=WAL")
+    # With WAL, NORMAL skips the fsync on every commit (the DB stays consistent; at worst the
+    # last few commits are lost on power failure). Every db call runs on the event loop, so
+    # this removes a disk-sync stall from each button click and guess.
+    _conn.execute("PRAGMA synchronous=NORMAL")
     _conn.execute("PRAGMA foreign_keys=ON")
     _conn.executescript(
         """
