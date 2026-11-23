@@ -356,6 +356,7 @@ class GuessBot(discord.Client):
                     embed.description = self.t(
                         "main.restore_post_description",
                         start_button=self.t("buttons.start_guessing"), guess_command=self.guess_mention,
+                        next_reset=next_reset(),
                     )
                     embed.set_image(url=None)
                     await message.edit(content=None, embed=embed, attachments=[], view=GuessView(self))
@@ -389,15 +390,11 @@ class GuessBot(discord.Client):
                     if kind == "difficulty":
                         title = self.t("challenge.difficulty_announcement_title", challenge_key=challenge_key)
                         view = DifficultyChallengeView(self)
-                        description = self.t(
-                            "challenge.difficulty_announcement", rewards=self.challenge_rewards_text()
-                        )
+                        description = self.difficulty_announcement_text(challenge_key)
                     else:
                         title = self.t("challenge.zoom_announcement_title", challenge_key=challenge_key)
                         view = ZoomChallengeView(self)
-                        description = self.t(
-                            "challenge.zoom_announcement", attempts=config.MAX_ATTEMPTS
-                        )
+                        description = self.zoom_announcement_text(challenge_key)
                     embed = message.embeds[0] if message.embeds else self.text_embed(
                         message.content or description, title=title
                     )
@@ -775,6 +772,28 @@ class GuessBot(discord.Client):
         defaults = {"easy": 1, "normal": 2, "hard": 3, "impossible": 5}
         configured = getattr(config, "DIFFICULTY_CHALLENGE_POINTS", defaults)
         return float(configured.get(mode, defaults[mode]))
+
+    def difficulty_announcement_text(self, challenge_key):
+        return self.t(
+            "challenge.difficulty_announcement",
+            challenge_key=challenge_key,
+            rewards=self.challenge_rewards_text(),
+            easy_label=self.t("modes.easy.label"),
+            normal_label=self.t("modes.normal.label"),
+            hard_label=self.t("modes.hard.label"),
+            impossible_label=self.t("modes.impossible.label"),
+        )
+
+    def zoom_announcement_text(self, challenge_key):
+        return self.t(
+            "challenge.zoom_announcement",
+            challenge_key=challenge_key,
+            attempts=config.MAX_ATTEMPTS,
+            points="/".join(str(value) for value in config.POINTS_BY_ATTEMPT),
+            speed_bonus=f"{SPEED_BONUS_MAX:g}",
+            bonus_interval=SPEED_BONUS_INTERVAL_SECONDS,
+            bonus_cutoff=SPEED_BONUS_CUTOFF_SECONDS,
+        )
 
     def challenge_rewards_text(self):
         modes = ("easy", "normal", "hard", "impossible")
@@ -2306,27 +2325,11 @@ class GuessBot(discord.Client):
 
         if kind == "difficulty":
             challenge_title = self.t("challenge.difficulty_announcement_title", challenge_key=challenge_key)
-            content = self.t(
-                "challenge.difficulty_announcement",
-                challenge_key=challenge_key,
-                rewards=self.challenge_rewards_text(),
-                easy_label=self.t("modes.easy.label"),
-                normal_label=self.t("modes.normal.label"),
-                hard_label=self.t("modes.hard.label"),
-                impossible_label=self.t("modes.impossible.label"),
-            )
+            content = self.difficulty_announcement_text(challenge_key)
             view = DifficultyChallengeView(self)
         else:
             challenge_title = self.t("challenge.zoom_announcement_title", challenge_key=challenge_key)
-            content = self.t(
-                "challenge.zoom_announcement",
-                challenge_key=challenge_key,
-                attempts=config.MAX_ATTEMPTS,
-                points="/".join(str(value) for value in config.POINTS_BY_ATTEMPT),
-                speed_bonus=f"{SPEED_BONUS_MAX:g}",
-                bonus_interval=SPEED_BONUS_INTERVAL_SECONDS,
-                bonus_cutoff=SPEED_BONUS_CUTOFF_SECONDS,
-            )
+            content = self.zoom_announcement_text(challenge_key)
             view = ZoomChallengeView(self)
 
         try:

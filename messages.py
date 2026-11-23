@@ -27,7 +27,12 @@ _LEGACY_ALIASES = {
 class _SafeFormat(dict):
     """Leave unknown {placeholders} untouched instead of crashing a response."""
 
+    def __init__(self, *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self.missing: set[str] = set()
+
     def __missing__(self, key: str) -> str:
+        self.missing.add(key)
         return "{" + key + "}"
 
 
@@ -41,6 +46,7 @@ class Messages:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.data: dict[str, Any] = {}
+        self._warned_missing: set[str] = set()
         self.load()
 
     def load(self) -> None:
@@ -92,7 +98,15 @@ class Messages:
         if not isinstance(value, (str, int, float)):
             value = default if default is not None else key.replace(".", " ").replace("_", " ").capitalize()
         try:
-            return str(value).format_map(_SafeFormat(values))
+            safe = _SafeFormat(values)
+            result = str(value).format_map(safe)
+            if safe.missing and key not in self._warned_missing:
+                # A caller forgot to pass values for this template, so players would see raw
+                # {placeholders}. Log it once per key so it can't go unnoticed.
+                self._warned_missing.add(key)
+                log.warning("Message %s was shown with unfilled placeholders: %s",
+                            key, ", ".join(sorted(safe.missing)))
+            return result
         except (ValueError, TypeError):
             log.exception("Could not format message key %s", key)
             return str(value)
